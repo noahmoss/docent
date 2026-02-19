@@ -70,12 +70,12 @@ impl Walkthrough {
 }
 
 pub fn mock_walkthrough() -> Walkthrough {
-    let summary1 = "Introduces a new UserSession struct to track authenticated user sessions. \
-        This is the foundation for the session management system, storing user ID, \
-        creation time, and expiration details.";
+    let summary1 = "Introduces a new `UserSession` struct to track authenticated user sessions. \
+        This is the **foundation** for the session management system, storing `user_id`, \
+        `created_at`, and expiration details.";
     let summary2 = "Adds validation logic to check if a session is still valid. \
-        Sessions are considered invalid if they've expired or been explicitly \
-        deactivated. This is critical for security.";
+        The `is_valid()` method returns **false** if the session has expired or been \
+        explicitly deactivated via `invalidate()`. This is **critical** for security.";
     let summary3 = "Integrates session validation into the API middleware. \
         All protected endpoints now check for a valid session before processing \
         requests. Invalid sessions return a 401 Unauthorized response.";

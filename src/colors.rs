@@ -11,8 +11,10 @@ pub const DIFF_HUNK_HEADER: Color = Color::Cyan;
 pub const DIFF_FILE_HEADER: Color = Color::Magenta;
 
 // Chat
-pub const CHAT_ASSISTANT_BULLET: Color = Color::White;
-pub const CHAT_ASSISTANT_TEXT: Color = Color::White;
+pub const CHAT_ASSISTANT_BULLET: Color = Color::Rgb(199, 199, 199);
+pub const CHAT_ASSISTANT_TEXT: Color = Color::Rgb(199, 199, 199);
+pub const CHAT_ASSISTANT_BOLD: Color = Color::White;
+pub const CHAT_ASSISTANT_CODE: Color = Color::Rgb(147, 154, 207);
 pub const CHAT_USER_TEXT: Color = Color::White;
 pub const CHAT_USER_BG: Color = Color::Rgb(60, 60, 60);
 
