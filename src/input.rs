@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::Size;
 
-use crate::app::{ActivePane, App, InputMode};
+use crate::app::{ActivePane, App, Divider, InputMode};
 use crate::ui::diff_viewer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,10 +197,60 @@ impl InputHandler {
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent, app: &mut App, size: Size) {
-        let left_pane_width = (size.width as f32 * 0.30) as u16;
-        let minimap_height = ((size.height - 1) as f32 * 0.40) as u16;
+        // Calculate divider positions based on current pane percentages
+        // Account for help bar at bottom (height - 1)
+        let content_height = size.height.saturating_sub(1);
+        let left_pane_width = (size.width as u32 * app.left_pane_percent as u32 / 100) as u16;
+        let minimap_height = (content_height as u32 * app.minimap_percent as u32 / 100) as u16;
+
+        // Divider hit zones (2 pixels on each side)
+        let near_vertical_divider = mouse.column.abs_diff(left_pane_width) <= 2;
+        let near_horizontal_divider =
+            mouse.column < left_pane_width && mouse.row.abs_diff(minimap_height) <= 1;
 
         match mouse.kind {
+            MouseEventKind::Down(_) => {
+                if near_vertical_divider {
+                    app.start_drag(Divider::Vertical);
+                } else if near_horizontal_divider {
+                    app.start_drag(Divider::Horizontal);
+                } else if mouse.column < left_pane_width {
+                    if mouse.row < minimap_height {
+                        // Click in minimap - select step
+                        app.set_active_pane(ActivePane::Minimap);
+                        // Account for border (1) and padding, each item is 1 row
+                        let clicked_row = mouse.row.saturating_sub(1) as usize;
+                        if clicked_row < app.walkthrough.step_count() {
+                            app.go_to_step(clicked_row);
+                        }
+                    } else {
+                        // Click in chat area - enter insert mode
+                        app.set_active_pane(ActivePane::Chat);
+                        app.enter_insert_mode();
+                    }
+                } else {
+                    // Click in diff viewer
+                    app.set_active_pane(ActivePane::Diff);
+                }
+            }
+            MouseEventKind::Drag(_) => {
+                if let Some(divider) = app.dragging {
+                    match divider {
+                        Divider::Vertical => {
+                            let new_percent = (mouse.column as u32 * 100 / size.width as u32) as u16;
+                            app.set_left_pane_percent(new_percent);
+                        }
+                        Divider::Horizontal => {
+                            let new_percent =
+                                (mouse.row as u32 * 100 / content_height as u32) as u16;
+                            app.set_minimap_percent(new_percent);
+                        }
+                    }
+                }
+            }
+            MouseEventKind::Up(_) => {
+                app.stop_drag();
+            }
             MouseEventKind::ScrollUp => {
                 if mouse.column < left_pane_width {
                     // Scroll in left pane - could be chat
@@ -221,26 +271,6 @@ impl InputHandler {
                 } else {
                     // Scroll in diff viewer
                     app.scroll_down(3);
-                }
-            }
-            MouseEventKind::Down(_) => {
-                if mouse.column < left_pane_width {
-                    if mouse.row < minimap_height {
-                        // Click in minimap - select step
-                        app.set_active_pane(ActivePane::Minimap);
-                        // Account for border (1) and padding, each item is 1 row
-                        let clicked_row = mouse.row.saturating_sub(1) as usize;
-                        if clicked_row < app.walkthrough.step_count() {
-                            app.go_to_step(clicked_row);
-                        }
-                    } else {
-                        // Click in chat area - enter insert mode
-                        app.set_active_pane(ActivePane::Chat);
-                        app.enter_insert_mode();
-                    }
-                } else {
-                    // Click in diff viewer
-                    app.set_active_pane(ActivePane::Diff);
                 }
             }
             _ => {}

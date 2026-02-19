@@ -54,13 +54,6 @@ pub struct Step {
     pub messages: Vec<Message>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StepStatus {
-    Pending,
-    Current,
-    Visited,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Walkthrough {
     pub steps: Vec<Step>,

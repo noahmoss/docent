@@ -1,4 +1,4 @@
-use crate::model::{Message, StepStatus, Walkthrough};
+use crate::model::{Message, Walkthrough};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -13,6 +13,12 @@ pub enum ActivePane {
     Diff,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Divider {
+    Vertical,   // Between left pane and diff viewer
+    Horizontal, // Between minimap and chat
+}
+
 pub struct App {
     pub walkthrough: Walkthrough,
     pub current_step: usize,
@@ -25,6 +31,11 @@ pub struct App {
     pub cursor_position: usize,
     pub active_pane: ActivePane,
     pub walkthrough_complete: bool,
+    // Pane layout (percentages)
+    pub left_pane_percent: u16,
+    pub minimap_percent: u16,
+    // Drag state
+    pub dragging: Option<Divider>,
 }
 
 impl App {
@@ -42,6 +53,9 @@ impl App {
             cursor_position: 0,
             active_pane: ActivePane::Diff,
             walkthrough_complete: false,
+            left_pane_percent: 50,
+            minimap_percent: 40,
+            dragging: None,
         }
     }
 
@@ -113,16 +127,6 @@ impl App {
     pub fn scroll_to_bottom(&mut self, content_height: usize, viewport_height: usize) {
         if content_height > viewport_height {
             self.diff_scroll = content_height - viewport_height;
-        }
-    }
-
-    pub fn step_status(&self, index: usize) -> StepStatus {
-        if index == self.current_step {
-            StepStatus::Current
-        } else if self.visited_steps.get(index).copied().unwrap_or(false) {
-            StepStatus::Visited
-        } else {
-            StepStatus::Pending
         }
     }
 
@@ -210,5 +214,23 @@ impl App {
 
     pub fn quit(&mut self) {
         self.should_quit = true;
+    }
+
+    pub fn set_left_pane_percent(&mut self, percent: u16) {
+        // Clamp to reasonable bounds (20-80%)
+        self.left_pane_percent = percent.clamp(20, 80);
+    }
+
+    pub fn set_minimap_percent(&mut self, percent: u16) {
+        // Clamp to reasonable bounds (15-85%)
+        self.minimap_percent = percent.clamp(15, 85);
+    }
+
+    pub fn start_drag(&mut self, divider: Divider) {
+        self.dragging = Some(divider);
+    }
+
+    pub fn stop_drag(&mut self) {
+        self.dragging = None;
     }
 }

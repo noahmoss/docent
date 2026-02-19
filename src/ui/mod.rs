@@ -29,8 +29,8 @@ fn render_main(frame: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(30), // Left pane (minimap + explanation)
-            Constraint::Percentage(70), // Right pane (diff viewer)
+            Constraint::Percentage(app.left_pane_percent),
+            Constraint::Percentage(100 - app.left_pane_percent),
         ])
         .split(area);
 
@@ -42,8 +42,8 @@ fn render_left_pane(frame: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(40), // Minimap
-            Constraint::Percentage(60), // Explanation
+            Constraint::Percentage(app.minimap_percent),
+            Constraint::Percentage(100 - app.minimap_percent),
         ])
         .split(area);
 
