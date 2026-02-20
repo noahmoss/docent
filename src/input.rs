@@ -194,6 +194,14 @@ impl InputHandler {
                 app.vim_mode = VimInputMode::Insert;
             }
 
+            // Ctrl+n/p scroll chat history
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.scroll_chat_down(1);
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.scroll_chat_up(1);
+            }
+
             // Motion
             KeyCode::Char('h') | KeyCode::Left => {
                 app.textarea.move_cursor(CursorMove::Back);
@@ -358,10 +366,10 @@ impl InputHandler {
             }
 
             // Scrolling diff
-            KeyCode::Char('j') | KeyCode::Down => app.scroll_down(1),
+            KeyCode::Char('j') | KeyCode::Down => app.scroll_down(1, viewport_height),
             KeyCode::Char('k') | KeyCode::Up => app.scroll_up(1),
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.scroll_down(viewport_height / 2);
+                app.scroll_down(viewport_height / 2, viewport_height);
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.scroll_up(viewport_height / 2);
@@ -456,7 +464,7 @@ impl InputHandler {
             MouseEventKind::ScrollUp => {
                 if mouse.column < left_pane_width {
                     // Scroll in left pane - could be chat
-                    if mouse.row > minimap_height {
+                    if mouse.row >= minimap_height {
                         app.scroll_chat_up(3);
                     }
                 } else {
@@ -467,12 +475,13 @@ impl InputHandler {
             MouseEventKind::ScrollDown => {
                 if mouse.column < left_pane_width {
                     // Scroll in left pane - could be chat
-                    if mouse.row > minimap_height {
+                    if mouse.row >= minimap_height {
                         app.scroll_chat_down(3);
                     }
                 } else {
                     // Scroll in diff viewer
-                    app.scroll_down(3);
+                    let diff_viewport = content_height.saturating_sub(2) as usize;
+                    app.scroll_down(3, diff_viewport);
                 }
             }
             _ => {}

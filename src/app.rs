@@ -63,6 +63,12 @@ pub struct App<'a> {
     pub textarea: TextArea<'a>,
     pub vim_enabled: bool,
     pub vim_mode: VimInputMode,
+    // Chat state - Some(step_index) when waiting for response
+    pub chat_pending: Option<usize>,
+    // Pending chat request to be processed by main loop (step_index, walkthrough, messages)
+    pub chat_request: Option<(usize, Walkthrough, Vec<Message>)>,
+    // When true, chat should scroll to show latest content
+    pub chat_follow_output: bool,
 }
 
 impl<'a> App<'a> {
@@ -88,6 +94,9 @@ impl<'a> App<'a> {
             textarea,
             vim_enabled: settings.vim_enabled(),
             vim_mode: VimInputMode::Normal,
+            chat_pending: None,
+            chat_request: None,
+            chat_follow_output: false,
         }
     }
 
@@ -116,6 +125,9 @@ impl<'a> App<'a> {
             textarea,
             vim_enabled: settings.vim_enabled(),
             vim_mode: VimInputMode::Normal,
+            chat_pending: None,
+            chat_request: None,
+            chat_follow_output: false,
         }
     }
 
@@ -209,8 +221,25 @@ impl<'a> App<'a> {
         self.walkthrough_complete && self.visited_steps.iter().all(|&v| v)
     }
 
-    pub fn scroll_down(&mut self, amount: usize) {
-        self.diff_scroll = self.diff_scroll.saturating_add(amount);
+    pub fn scroll_down(&mut self, amount: usize, viewport_height: usize) {
+        let content_lines = self.diff_content_lines();
+        let max_scroll = content_lines.saturating_sub(viewport_height);
+        self.diff_scroll = self.diff_scroll.saturating_add(amount).min(max_scroll);
+    }
+
+    /// Calculate total lines of diff content for current step
+    fn diff_content_lines(&self) -> usize {
+        if let Some(step) = self.current_step_data() {
+            let mut count = 0;
+            for hunk in &step.hunks {
+                count += 2; // header + blank line
+                count += hunk.content.lines().count();
+                count += 1; // trailing blank
+            }
+            count
+        } else {
+            1
+        }
     }
 
     pub fn scroll_up(&mut self, amount: usize) {
@@ -231,6 +260,7 @@ impl<'a> App<'a> {
         self.walkthrough.get_step(self.current_step)
     }
 
+    #[allow(dead_code)]
     pub fn current_step_data_mut(&mut self) -> Option<&mut crate::model::Step> {
         self.walkthrough.steps.get_mut(self.current_step)
     }
@@ -243,9 +273,15 @@ impl<'a> App<'a> {
         self.active_pane = pane;
     }
 
+    /// Sends the current message and queues a chat request for the main loop.
     pub fn send_message(&mut self) {
         let content: String = self.textarea.lines().join("\n");
         if content.trim().is_empty() {
+            return;
+        }
+
+        // Don't allow sending while a chat is pending
+        if self.chat_pending.is_some() {
             return;
         }
 
@@ -253,15 +289,57 @@ impl<'a> App<'a> {
         self.textarea.select_all();
         self.textarea.delete_char();
 
-        if let Some(step) = self.current_step_data_mut() {
+        let step_index = self.current_step;
+        if let Some(step) = self.walkthrough.steps.get_mut(step_index) {
             step.messages.push(Message::user(content));
-            // Placeholder response - will be replaced with actual LLM call
-            step.messages.push(Message::assistant(
-                "I'm not connected to an LLM yet, but I'll be able to answer your questions soon!"
-            ));
+            let messages_clone = step.messages.clone();
+            // Clone walkthrough for context (includes all steps and their conversations)
+            let walkthrough_clone = self.walkthrough.clone();
+            // Set pending state and queue request
+            self.chat_pending = Some(step_index);
+            self.chat_request = Some((step_index, walkthrough_clone, messages_clone));
         }
+    }
 
-        // Stay in insert mode after sending
+    /// Called when a streaming chat chunk is received
+    pub fn receive_chat_chunk(&mut self, step_index: usize, chunk: String) {
+        if self.chat_pending != Some(step_index) {
+            return;
+        }
+        if let Some(step) = self.walkthrough.steps.get_mut(step_index) {
+            // Check if we already have an assistant message being built
+            if let Some(last_msg) = step.messages.last_mut() {
+                if last_msg.role == crate::model::MessageRole::Assistant {
+                    // Append to existing message
+                    last_msg.content.push_str(&chunk);
+                } else {
+                    // First chunk - create new assistant message
+                    step.messages.push(Message::assistant(chunk));
+                }
+            } else {
+                // First chunk - create new assistant message
+                step.messages.push(Message::assistant(chunk));
+            }
+            // Follow output - render will scroll to bottom
+            self.chat_follow_output = true;
+        }
+    }
+
+    /// Called when streaming chat completes
+    pub fn receive_chat_complete(&mut self, step_index: usize) {
+        if self.chat_pending == Some(step_index) {
+            self.chat_pending = None;
+        }
+    }
+
+    /// Called when chat request fails
+    pub fn receive_chat_error(&mut self, step_index: usize, error: String) {
+        if self.chat_pending == Some(step_index) {
+            self.chat_pending = None;
+            if let Some(step) = self.walkthrough.steps.get_mut(step_index) {
+                step.messages.push(Message::assistant(format!("Error: {}", error)));
+            }
+        }
     }
 
     pub fn textarea_is_empty(&self) -> bool {
@@ -270,10 +348,12 @@ impl<'a> App<'a> {
 
     pub fn scroll_chat_up(&mut self, amount: usize) {
         self.chat_scroll = self.chat_scroll.saturating_sub(amount);
+        self.chat_follow_output = false;
     }
 
     pub fn scroll_chat_down(&mut self, amount: usize) {
         self.chat_scroll = self.chat_scroll.saturating_add(amount);
+        self.chat_follow_output = false;
     }
 
     pub fn quit(&mut self) {

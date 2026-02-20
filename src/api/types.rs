@@ -56,7 +56,7 @@ pub const CREATE_WALKTHROUGH_TOOL: &str = r#"{
   }
 }"#;
 
-pub const SYSTEM_PROMPT: &str = r#"You are an expert code reviewer creating a narrative walkthrough of a code change.
+pub const WALKTHROUGH_SYSTEM_PROMPT: &str = r#"You are an expert code reviewer creating a narrative walkthrough of a code change.
 
 Your goal is to organize the diff hunks into a logical sequence that tells a story - not necessarily in file order, but in the order that best helps a reviewer understand the changes.
 
@@ -66,9 +66,22 @@ Guidelines:
 - Mark security-critical or architecturally significant changes as "critical"
 - Write summaries in markdown, highlighting key points with **bold**
 - Each hunk should appear in exactly one step
-- Aim for 3-8 steps for typical PRs; fewer for small changes
+- Aim for 5-10 steps for a typical PR, but use your judgment based on the complexity of the change
 
 Call the create_walkthrough tool with your structured analysis."#;
+
+pub const CHAT_SYSTEM_PROMPT: &str = r#"You are an expert code reviewer helping a developer understand a code change.
+
+You are discussing a specific step in a code review walkthrough. The step contains:
+- A title and summary explaining what the change does
+- The actual code diff (hunks) being reviewed
+
+Answer questions concisely and helpfully. Focus on:
+- Explaining what the code does and why
+- Pointing out potential issues or improvements
+- Clarifying any confusing aspects of the change
+
+Keep responses brief but informative. Only use **bold** and `inline code` for formatting - no headers, lists, or code blocks."#;
 
 /// A step as returned by Claude's tool call
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -97,8 +97,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_chat_history(frame: &mut Frame, area: Rect, app: &App) {
-    let inner_height = area.height.saturating_sub(2) as usize;
-
     let lines: Vec<Line> = if app.is_walkthrough_complete() {
         vec![
             Line::from(Span::styled(
@@ -115,7 +113,15 @@ fn render_chat_history(frame: &mut Frame, area: Rect, app: &App) {
         for message in &step.messages {
             match message.role {
                 MessageRole::Assistant => {
+                    let mut prev_empty = false;
                     for (i, line) in message.content.lines().enumerate() {
+                        // Skip consecutive empty lines
+                        let is_empty = line.trim().is_empty();
+                        if is_empty && prev_empty {
+                            continue;
+                        }
+                        prev_empty = is_empty;
+
                         let mut spans = if i == 0 {
                             vec![Span::styled(
                                 "⏺ ",
@@ -143,19 +149,44 @@ fn render_chat_history(frame: &mut Frame, area: Rect, app: &App) {
             all_lines.push(Line::from("")); // Spacing between messages
         }
 
+        // Show thinking indicator if chat is pending and no response started yet
+        if app.chat_pending == Some(app.current_step) {
+            // Check if last message is still the user's (no streaming response yet)
+            let show_thinking = step
+                .messages
+                .last()
+                .map(|m| m.role == MessageRole::User)
+                .unwrap_or(true);
+            if show_thinking {
+                all_lines.push(Line::from(Span::styled(
+                    "● Thinking...",
+                    Style::default().fg(colors::CHAT_ASSISTANT_BULLET),
+                )));
+            }
+        }
+
         all_lines
     } else {
         vec![Line::from("No step selected")]
     };
 
-    // Apply scroll
-    let visible_lines: Vec<Line> = lines
-        .into_iter()
-        .skip(app.chat_scroll)
-        .take(inner_height)
-        .collect();
+    // Calculate scroll position
+    let scroll = if app.chat_follow_output {
+        // Scroll to bottom: estimate wrapped line count
+        let line_count: usize = lines.iter()
+            .map(|line| {
+                let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+                ((width / area.width.max(1) as usize) + 1).max(1)
+            })
+            .sum();
+        line_count.saturating_sub(area.height as usize) as u16
+    } else {
+        app.chat_scroll as u16
+    };
 
-    let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
     frame.render_widget(paragraph, area);
 }
 

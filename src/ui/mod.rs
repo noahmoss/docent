@@ -173,6 +173,8 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
                 } else {
                     // Vim normal mode
                     Line::from(vec![
+                        Span::styled(" Ctrl+n/p ", Style::default().fg(Color::Yellow)),
+                        Span::raw("scroll "),
                         Span::styled(" Ctrl+C ", Style::default().fg(Color::Yellow)),
                         Span::raw("quit"),
                     ])

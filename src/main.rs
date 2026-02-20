@@ -20,6 +20,7 @@ use ratatui::prelude::*;
 use tokio::sync::mpsc;
 
 use app::App;
+use api::ClaudeClient;
 use generation::WalkthroughGenerator;
 use input::InputHandler;
 use model::mock_walkthrough;
@@ -33,6 +34,12 @@ enum AppEvent {
     GenerationComplete(model::Walkthrough),
     /// Walkthrough generation failed
     GenerationError(String),
+    /// Chat response chunk received (step_index, text_chunk)
+    ChatChunk(usize, String),
+    /// Chat response completed (step_index)
+    ChatComplete(usize),
+    /// Chat request failed (step_index, error_message)
+    ChatError(usize, String),
 }
 
 #[derive(Debug)]
@@ -185,6 +192,15 @@ async fn run_app<B: Backend + Send>(
                 AppEvent::GenerationError(message) => {
                     app.set_error(message);
                 }
+                AppEvent::ChatChunk(step_index, chunk) => {
+                    app.receive_chat_chunk(step_index, chunk);
+                }
+                AppEvent::ChatComplete(step_index) => {
+                    app.receive_chat_complete(step_index);
+                }
+                AppEvent::ChatError(step_index, error) => {
+                    app.receive_chat_error(step_index, error);
+                }
             },
             Ok(None) => {
                 // Channel closed
@@ -193,6 +209,44 @@ async fn run_app<B: Backend + Send>(
             Err(_) => {
                 // Timeout - continue to re-render (for spinner)
             }
+        }
+
+        // Check for pending chat requests
+        if let Some((step_index, walkthrough, messages)) = app.chat_request.take() {
+            let tx_chat = tx.clone();
+            tokio::spawn(async move {
+                match ClaudeClient::from_env() {
+                    Ok(client) => {
+                        // Create channel for streaming chunks
+                        let (chunk_tx, mut chunk_rx) = mpsc::channel::<String>(32);
+
+                        // Spawn task to forward chunks to main event loop
+                        let tx_chunks = tx_chat.clone();
+                        let forward_task = tokio::spawn(async move {
+                            while let Some(chunk) = chunk_rx.recv().await {
+                                if tx_chunks.send(AppEvent::ChatChunk(step_index, chunk)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        });
+
+                        // Run streaming chat
+                        match client.chat_streaming(&walkthrough, step_index, &messages, chunk_tx).await {
+                            Ok(()) => {
+                                // Wait for forward task to complete
+                                let _ = forward_task.await;
+                                let _ = tx_chat.send(AppEvent::ChatComplete(step_index)).await;
+                            }
+                            Err(e) => {
+                                let _ = tx_chat.send(AppEvent::ChatError(step_index, e.to_string())).await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx_chat.send(AppEvent::ChatError(step_index, e.to_string())).await;
+                    }
+                }
+            });
         }
 
         // Check for quit

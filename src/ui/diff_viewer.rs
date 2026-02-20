@@ -41,19 +41,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let total_lines = lines.len();
 
-    // Apply scroll offset
+    // Apply scroll offset (clamped to valid range)
+    let max_scroll = total_lines.saturating_sub(inner_height);
+    let scroll = app.diff_scroll.min(max_scroll);
     let visible_lines: Vec<Line> = lines
         .into_iter()
-        .skip(app.diff_scroll)
+        .skip(scroll)
         .take(inner_height)
         .collect();
 
     let scroll_indicator = if total_lines > inner_height {
-        let percent = if total_lines - inner_height > 0 {
-            (app.diff_scroll * 100) / (total_lines - inner_height).max(1)
-        } else {
-            0
-        };
+        let percent = (scroll * 100) / max_scroll.max(1);
         format!(" Diff [{}%] ", percent.min(100))
     } else {
         " Diff ".to_string()
