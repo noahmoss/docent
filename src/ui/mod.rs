@@ -195,17 +195,19 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
             }
             ActivePane::Minimap => {
                 let mut spans = vec![];
-                spans.extend(help("n/p", "step"));
+                spans.extend(help("n/p", "switch step"));
+                spans.extend(help("Enter", "mark reviewed"));
+                spans.extend(help("x", "toggle reviewed"));
                 spans.extend(help("Tab", "switch pane"));
-                spans.extend(help("i", "chat"));
                 spans.extend(help("Ctrl+C", "quit"));
                 Line::from(spans)
             }
             ActivePane::Diff => {
                 let mut spans = vec![];
                 spans.extend(help("j/k", "scroll"));
-                spans.extend(help("Tab", "switch pane"));
-                spans.extend(help("i", "chat"));
+                spans.extend(help("Ctrl+d/u", "half-page"));
+                spans.extend(help("Enter", "mark reviewed"));
+                spans.extend(help("x", "toggle reviewed"));
                 spans.extend(help("Ctrl+C", "quit"));
                 Line::from(spans)
             }

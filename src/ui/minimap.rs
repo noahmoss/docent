@@ -48,9 +48,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     let title = format!(
-        " Steps ({}/{}) ",
+        " Steps ({}/{}) · {}/{} lines ",
         app.current_step + 1,
-        app.walkthrough.step_count()
+        app.walkthrough.step_count(),
+        app.reviewed_diff_lines(),
+        app.total_diff_lines(),
     );
 
     let border_color = if app.active_pane == ActivePane::Minimap {

@@ -216,14 +216,36 @@ impl<'a> App<'a> {
         }
     }
 
-    pub fn uncomplete_step(&mut self) {
+    pub fn toggle_step_reviewed(&mut self) {
         if let Some(visited) = self.visited_steps.get_mut(self.current_step) {
-            *visited = false;
+            *visited = !*visited;
         }
+        self.walkthrough_complete = false;
     }
 
     pub fn is_walkthrough_complete(&self) -> bool {
         self.walkthrough_complete && self.visited_steps.iter().all(|&v| v)
+    }
+
+    /// Count diff lines in a step
+    fn step_diff_lines(step: &crate::model::Step) -> usize {
+        step.hunks.iter().map(|h| h.content.lines().count()).sum()
+    }
+
+    /// Total diff lines across all steps
+    pub fn total_diff_lines(&self) -> usize {
+        self.walkthrough.steps.iter().map(Self::step_diff_lines).sum()
+    }
+
+    /// Diff lines in completed steps
+    pub fn reviewed_diff_lines(&self) -> usize {
+        self.walkthrough
+            .steps
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.visited_steps.get(*i).copied().unwrap_or(false))
+            .map(|(_, step)| Self::step_diff_lines(step))
+            .sum()
     }
 
     pub fn scroll_down(&mut self, amount: usize, viewport_height: usize) {

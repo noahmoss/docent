@@ -380,8 +380,8 @@ impl InputHandler {
             // Complete step and advance (or finish walkthrough)
             KeyCode::Enter => app.complete_step_and_advance(),
 
-            // Undo step completion
-            KeyCode::Char('u') => app.uncomplete_step(),
+            // Toggle step reviewed
+            KeyCode::Char('x') => app.toggle_step_reviewed(),
 
             _ => {}
         }
