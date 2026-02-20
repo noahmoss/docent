@@ -371,6 +371,7 @@ impl<'a> App<'a> {
 
     pub fn exit_chat_scrollback(&mut self) {
         self.chat_scrollback_mode = false;
+        self.chat_scroll = 0; // Back to bottom
     }
 
     pub fn quit(&mut self) {

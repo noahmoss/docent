@@ -155,6 +155,13 @@ fn render_left_pane(frame: &mut Frame, area: Rect, app: &App) {
     explanation::render(frame, chunks[1], app);
 }
 
+fn help(key: &str, action: &str) -> [Span<'static>; 2] {
+    [
+        Span::styled(format!(" {key} "), Style::default().fg(Color::Yellow)),
+        Span::raw(format!("{action} ")),
+    ]
+}
+
 fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
     let help_text = if app.quit_pending {
         Line::from(Span::styled(
@@ -171,40 +178,37 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
                         Style::default().fg(Color::DarkGray),
                     ))
                 } else if app.chat_scrollback_mode {
-                    // Scrollback mode
-                    Line::from(vec![
-                        Span::styled("-- SCROLLBACK -- ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(" Ctrl+n/p ", Style::default().fg(Color::Yellow)),
-                        Span::raw("scroll "),
-                        Span::styled(" Esc ", Style::default().fg(Color::Yellow)),
-                        Span::raw("exit"),
-                    ])
+                    let mut spans = vec![Span::styled(
+                        "-- SCROLLBACK -- ",
+                        Style::default().fg(Color::DarkGray),
+                    )];
+                    spans.extend(help("Ctrl+n/p", "scroll"));
+                    spans.extend(help("Esc", "exit"));
+                    Line::from(spans)
                 } else {
-                    // Vim normal mode
-                    Line::from(vec![
-                        Span::styled(" Ctrl+n/p ", Style::default().fg(Color::Yellow)),
-                        Span::raw("scroll "),
-                        Span::styled(" Ctrl+C ", Style::default().fg(Color::Yellow)),
-                        Span::raw("quit"),
-                    ])
+                    let mut spans = vec![];
+                    spans.extend(help("Ctrl+n/p", "scroll"));
+                    spans.extend(help("Tab", "switch pane"));
+                    spans.extend(help("Ctrl+C", "quit"));
+                    Line::from(spans)
                 }
             }
-            ActivePane::Minimap => Line::from(vec![
-                Span::styled(" n/p ", Style::default().fg(Color::Yellow)),
-                Span::raw("step "),
-                Span::styled(" i ", Style::default().fg(Color::Yellow)),
-                Span::raw("chat "),
-                Span::styled(" Ctrl+C ", Style::default().fg(Color::Yellow)),
-                Span::raw("quit"),
-            ]),
-            ActivePane::Diff => Line::from(vec![
-                Span::styled(" j/k ", Style::default().fg(Color::Yellow)),
-                Span::raw("scroll "),
-                Span::styled(" i ", Style::default().fg(Color::Yellow)),
-                Span::raw("chat "),
-                Span::styled(" Ctrl+C ", Style::default().fg(Color::Yellow)),
-                Span::raw("quit"),
-            ]),
+            ActivePane::Minimap => {
+                let mut spans = vec![];
+                spans.extend(help("n/p", "step"));
+                spans.extend(help("Tab", "switch pane"));
+                spans.extend(help("i", "chat"));
+                spans.extend(help("Ctrl+C", "quit"));
+                Line::from(spans)
+            }
+            ActivePane::Diff => {
+                let mut spans = vec![];
+                spans.extend(help("j/k", "scroll"));
+                spans.extend(help("Tab", "switch pane"));
+                spans.extend(help("i", "chat"));
+                spans.extend(help("Ctrl+C", "quit"));
+                Line::from(spans)
+            }
         }
     };
 

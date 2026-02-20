@@ -88,21 +88,6 @@ impl InputHandler {
             return;
         }
 
-        // Ctrl+n/p for scrolling (works in insert mode too)
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('n') => {
-                    app.scroll_chat_down(1);
-                    return;
-                }
-                KeyCode::Char('p') => {
-                    app.scroll_chat_up(1);
-                    return;
-                }
-                _ => {}
-            }
-        }
-
         // Enter submits, Shift+Enter for newline
         if key.code == KeyCode::Enter {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
