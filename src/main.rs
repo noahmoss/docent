@@ -2,6 +2,7 @@ mod app;
 mod colors;
 mod input;
 mod model;
+mod settings;
 mod ui;
 
 use std::io::{self, stdout};
@@ -17,6 +18,7 @@ use ratatui::prelude::*;
 use app::App;
 use input::InputHandler;
 use model::mock_walkthrough;
+use settings::Settings;
 
 fn main() -> io::Result<()> {
     // Setup terminal
@@ -37,8 +39,9 @@ fn main() -> io::Result<()> {
 }
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
+    let settings = Settings::load();
     let walkthrough = mock_walkthrough();
-    let mut app = App::new(walkthrough);
+    let mut app = App::new(walkthrough, &settings);
     let mut input_handler = InputHandler::new();
 
     loop {

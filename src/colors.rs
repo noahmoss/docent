@@ -19,7 +19,6 @@ pub const CHAT_USER_TEXT: Color = Color::White;
 pub const CHAT_USER_BG: Color = Color::Rgb(60, 60, 60);
 
 // Input
-pub const INPUT_PROMPT: Color = Color::DarkGray;
 pub const INPUT_PLACEHOLDER: Color = Color::DarkGray;
 pub const INPUT_CURSOR_FG: Color = Color::Black;
 pub const INPUT_CURSOR_BG: Color = Color::White;

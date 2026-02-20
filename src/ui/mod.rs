@@ -10,7 +10,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::app::{App, InputMode};
+use crate::app::{ActivePane, App, VimInputMode};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -52,23 +52,45 @@ fn render_left_pane(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let help_text = match app.input_mode {
-        InputMode::Normal => Line::from(vec![
-            Span::styled(" j/k ", Style::default().fg(Color::Yellow)),
-            Span::raw("scroll "),
-            Span::styled(" n/p ", Style::default().fg(Color::Yellow)),
-            Span::raw("step "),
-            Span::styled(" i ", Style::default().fg(Color::Yellow)),
-            Span::raw("chat "),
-            Span::styled(" q ", Style::default().fg(Color::Yellow)),
-            Span::raw("quit"),
-        ]),
-        InputMode::Insert => Line::from(vec![
-            Span::styled(" Enter ", Style::default().fg(Color::Yellow)),
-            Span::raw("send "),
-            Span::styled(" Esc ", Style::default().fg(Color::Yellow)),
-            Span::raw("cancel "),
-        ]),
+    let help_text = if app.quit_pending {
+        Line::from(Span::styled(
+            "Press Ctrl+C again to quit",
+            Style::default().fg(Color::White),
+        ))
+    } else {
+        match app.active_pane {
+            ActivePane::Chat => {
+                let in_insert = !app.vim_enabled || app.vim_mode == VimInputMode::Insert;
+                if in_insert {
+                    Line::from(Span::styled(
+                        "-- INSERT --",
+                        Style::default().fg(Color::DarkGray),
+                    ))
+                } else {
+                    // Vim normal mode
+                    Line::from(vec![
+                        Span::styled(" Ctrl+C ", Style::default().fg(Color::Yellow)),
+                        Span::raw("quit"),
+                    ])
+                }
+            }
+            ActivePane::Minimap => Line::from(vec![
+                Span::styled(" n/p ", Style::default().fg(Color::Yellow)),
+                Span::raw("step "),
+                Span::styled(" i ", Style::default().fg(Color::Yellow)),
+                Span::raw("chat "),
+                Span::styled(" Ctrl+C ", Style::default().fg(Color::Yellow)),
+                Span::raw("quit"),
+            ]),
+            ActivePane::Diff => Line::from(vec![
+                Span::styled(" j/k ", Style::default().fg(Color::Yellow)),
+                Span::raw("scroll "),
+                Span::styled(" i ", Style::default().fg(Color::Yellow)),
+                Span::raw("chat "),
+                Span::styled(" Ctrl+C ", Style::default().fg(Color::Yellow)),
+                Span::raw("quit"),
+            ]),
+        }
     };
 
     let paragraph = Paragraph::new(help_text);

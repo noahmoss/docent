@@ -1,7 +1,11 @@
-use crate::model::{Message, Walkthrough};
+use tui_textarea::TextArea;
 
+use crate::model::{Message, Walkthrough};
+use crate::settings::Settings;
+
+/// Vim mode state for the text editor
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputMode {
+pub enum VimInputMode {
     Normal,
     Insert,
 }
@@ -19,16 +23,14 @@ pub enum Divider {
     Horizontal, // Between minimap and chat
 }
 
-pub struct App {
+pub struct App<'a> {
     pub walkthrough: Walkthrough,
     pub current_step: usize,
     pub visited_steps: Vec<bool>,
     pub diff_scroll: usize,
     pub chat_scroll: usize,
     pub should_quit: bool,
-    pub input_mode: InputMode,
-    pub input_buffer: String,
-    pub cursor_position: usize,
+    pub quit_pending: bool,
     pub active_pane: ActivePane,
     pub walkthrough_complete: bool,
     // Pane layout (percentages)
@@ -36,11 +38,18 @@ pub struct App {
     pub minimap_percent: u16,
     // Drag state
     pub dragging: Option<Divider>,
+    // Text editor
+    pub textarea: TextArea<'a>,
+    pub vim_enabled: bool,
+    pub vim_mode: VimInputMode,
 }
 
-impl App {
-    pub fn new(walkthrough: Walkthrough) -> Self {
+impl<'a> App<'a> {
+    pub fn new(walkthrough: Walkthrough, settings: &Settings) -> Self {
         let step_count = walkthrough.step_count();
+        let mut textarea = TextArea::default();
+        textarea.set_cursor_line_style(ratatui::style::Style::default());
+
         Self {
             walkthrough,
             current_step: 0,
@@ -48,14 +57,15 @@ impl App {
             diff_scroll: 0,
             chat_scroll: 0,
             should_quit: false,
-            input_mode: InputMode::Normal,
-            input_buffer: String::new(),
-            cursor_position: 0,
+            quit_pending: false,
             active_pane: ActivePane::Diff,
             walkthrough_complete: false,
             left_pane_percent: 50,
             minimap_percent: 40,
             dragging: None,
+            textarea,
+            vim_enabled: settings.vim_enabled(),
+            vim_mode: VimInputMode::Normal,
         }
     }
 
@@ -138,60 +148,23 @@ impl App {
         self.walkthrough.steps.get_mut(self.current_step)
     }
 
-    pub fn enter_insert_mode(&mut self) {
-        self.input_mode = InputMode::Insert;
-        self.active_pane = ActivePane::Chat;
-    }
-
-    pub fn exit_insert_mode(&mut self) {
-        self.input_mode = InputMode::Normal;
-    }
-
     pub fn set_active_pane(&mut self, pane: ActivePane) {
-        // If leaving chat while in insert mode, exit insert mode
+        // If leaving chat, reset to vim normal mode
         if self.active_pane == ActivePane::Chat && pane != ActivePane::Chat {
-            self.exit_insert_mode();
+            self.vim_mode = VimInputMode::Normal;
         }
         self.active_pane = pane;
     }
 
-    pub fn insert_char(&mut self, c: char) {
-        self.input_buffer.insert(self.cursor_position, c);
-        self.cursor_position += 1;
-    }
-
-    pub fn delete_char(&mut self) {
-        if self.cursor_position > 0 {
-            self.cursor_position -= 1;
-            self.input_buffer.remove(self.cursor_position);
-        }
-    }
-
-    pub fn move_cursor_left(&mut self) {
-        self.cursor_position = self.cursor_position.saturating_sub(1);
-    }
-
-    pub fn move_cursor_right(&mut self) {
-        if self.cursor_position < self.input_buffer.len() {
-            self.cursor_position += 1;
-        }
-    }
-
-    pub fn move_cursor_to_start(&mut self) {
-        self.cursor_position = 0;
-    }
-
-    pub fn move_cursor_to_end(&mut self) {
-        self.cursor_position = self.input_buffer.len();
-    }
-
     pub fn send_message(&mut self) {
-        if self.input_buffer.trim().is_empty() {
+        let content: String = self.textarea.lines().join("\n");
+        if content.trim().is_empty() {
             return;
         }
 
-        let content = std::mem::take(&mut self.input_buffer);
-        self.cursor_position = 0;
+        // Clear the textarea
+        self.textarea.select_all();
+        self.textarea.delete_char();
 
         if let Some(step) = self.current_step_data_mut() {
             step.messages.push(Message::user(content));
@@ -201,7 +174,11 @@ impl App {
             ));
         }
 
-        self.exit_insert_mode();
+        // Stay in insert mode after sending
+    }
+
+    pub fn textarea_is_empty(&self) -> bool {
+        self.textarea.lines().iter().all(|l| l.is_empty())
     }
 
     pub fn scroll_chat_up(&mut self, amount: usize) {

@@ -1,13 +1,13 @@
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
-use crate::app::{ActivePane, App, InputMode};
+use crate::app::{ActivePane, App};
 use crate::colors;
 use crate::model::MessageRole;
 
@@ -65,12 +65,32 @@ fn parse_markdown(text: &str) -> Vec<Span<'static>> {
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+    let border_color = if app.active_pane == ActivePane::Chat {
+        colors::BORDER_ACTIVE
+    } else {
+        colors::BORDER_INACTIVE
+    };
+
+    // Outer block for the entire chat pane
+    let outer_block = Block::default()
+        .title(" Chat ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .padding(Padding::horizontal(1));
+
+    let inner_area = outer_block.inner(area);
+    frame.render_widget(outer_block, area);
+
+    // Calculate input height based on content (min 1, max 10 lines)
+    let input_lines = app.textarea.lines().len().max(1).min(10) as u16;
+    let input_height = input_lines + 1; // +1 for the top border
+
     let chunks = Layout::default()
         .constraints([
-            Constraint::Min(1),    // Chat history
-            Constraint::Length(3), // Input box
+            Constraint::Min(1),              // Chat history
+            Constraint::Length(input_height), // Input box (dynamic)
         ])
-        .split(area);
+        .split(inner_area);
 
     render_chat_history(frame, chunks[0], app);
     render_input_box(frame, chunks[1], app);
@@ -135,79 +155,54 @@ fn render_chat_history(frame: &mut Frame, area: Rect, app: &App) {
         .take(inner_height)
         .collect();
 
-    let title = match app.input_mode {
-        InputMode::Insert => " Chat (INSERT) ",
-        InputMode::Normal => " Chat ",
-    };
-
-    let border_color = if app.active_pane == ActivePane::Chat {
-        colors::BORDER_ACTIVE
-    } else {
-        colors::BORDER_INACTIVE
-    };
-
-    let paragraph = Paragraph::new(visible_lines)
-        .block(
-            Block::default()
-                .title(title)
-                .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-                .border_style(Style::default().fg(border_color))
-                .padding(Padding::horizontal(1)),
-        )
-        .wrap(Wrap { trim: false });
-
+    let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
 
 fn render_input_box(frame: &mut Frame, area: Rect, app: &App) {
-    let border_color = if app.active_pane == ActivePane::Chat {
-        colors::BORDER_ACTIVE
-    } else {
-        colors::BORDER_INACTIVE
-    };
+    // First render the top border across the full width
+    let border_block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(colors::BORDER_INACTIVE));
+    let inner_area = border_block.inner(area);
+    frame.render_widget(border_block, area);
 
-    let prompt_style = Style::default().fg(colors::INPUT_PROMPT);
-    let placeholder_style = Style::default().fg(colors::INPUT_PLACEHOLDER);
-
-    let input_line = if app.input_buffer.is_empty() {
-        let placeholder = match app.input_mode {
-            InputMode::Insert => "Type your question...",
-            InputMode::Normal => "Press 'i' to ask a question",
-        };
-        Line::from(vec![
-            Span::styled("> ", prompt_style),
-            Span::styled(placeholder, placeholder_style),
+    // Split into prompt column and textarea
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(2), // "> " prompt
+            Constraint::Min(1),    // Textarea
         ])
+        .split(inner_area);
+
+    // Render the prompt
+    let prompt_style = Style::default().fg(colors::BORDER_INACTIVE);
+    let prompt = Paragraph::new(Line::from(Span::styled("> ", prompt_style)));
+    frame.render_widget(prompt, chunks[0]);
+
+    let chat_focused = app.active_pane == ActivePane::Chat;
+
+    // Show placeholder or the textarea
+    if app.textarea_is_empty() && !chat_focused {
+        let placeholder_style = Style::default().fg(colors::INPUT_PLACEHOLDER);
+        let placeholder = "Press 'i' to ask a question";
+        let input = Paragraph::new(Line::from(Span::styled(placeholder, placeholder_style)));
+        frame.render_widget(input, chunks[1]);
     } else {
-        let before_cursor = &app.input_buffer[..app.cursor_position];
-        let at_cursor = app
-            .input_buffer
-            .chars()
-            .nth(app.cursor_position)
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| " ".to_string());
-        let after_cursor = if app.cursor_position < app.input_buffer.len() {
-            &app.input_buffer[app.cursor_position + at_cursor.len()..]
+        let mut textarea = app.textarea.clone();
+
+        // Show cursor when Chat pane is focused
+        if chat_focused {
+            textarea.set_cursor_style(
+                Style::default()
+                    .bg(colors::INPUT_CURSOR_BG)
+                    .fg(colors::INPUT_CURSOR_FG),
+            );
         } else {
-            ""
-        };
+            textarea.set_cursor_style(Style::default());
+        }
 
-        Line::from(vec![
-            Span::styled("> ", prompt_style),
-            Span::raw(before_cursor),
-            Span::styled(
-                at_cursor,
-                Style::default().bg(colors::INPUT_CURSOR_BG).fg(colors::INPUT_CURSOR_FG),
-            ),
-            Span::raw(after_cursor),
-        ])
-    };
-
-    let input = Paragraph::new(input_line).block(
-        Block::default()
-            .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
-            .border_style(Style::default().fg(border_color))
-            .padding(Padding::horizontal(1)),
-    );
-    frame.render_widget(input, area);
+        frame.render_widget(&textarea, chunks[1]);
+    }
 }
