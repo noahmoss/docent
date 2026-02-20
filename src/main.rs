@@ -1,11 +1,14 @@
+mod api;
 mod app;
 mod colors;
+mod diff;
+mod generation;
 mod input;
 mod model;
 mod settings;
 mod ui;
 
-use std::io::{self, stdout};
+use std::io::{self, stdout, IsTerminal, Read};
 use std::time::Duration;
 
 use crossterm::{
@@ -14,13 +17,68 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::prelude::*;
+use tokio::sync::mpsc;
 
 use app::App;
+use generation::WalkthroughGenerator;
 use input::InputHandler;
 use model::mock_walkthrough;
 use settings::Settings;
 
-fn main() -> io::Result<()> {
+/// Events that can occur in the app
+enum AppEvent {
+    /// Terminal input event
+    Terminal(Event),
+    /// Walkthrough generation completed
+    GenerationComplete(model::Walkthrough),
+    /// Walkthrough generation failed
+    GenerationError(String),
+}
+
+#[derive(Debug)]
+struct Args {
+    diff_file: Option<String>,
+    use_mock: bool,
+}
+
+fn parse_args() -> Args {
+    let args: Vec<String> = std::env::args().collect();
+    Args {
+        diff_file: args.get(1).filter(|s| !s.starts_with('-')).cloned(),
+        use_mock: args.iter().any(|a| a == "--mock"),
+    }
+}
+
+fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
+    if args.use_mock {
+        return Ok(None);
+    }
+
+    // Try to read from file if specified
+    if let Some(path) = &args.diff_file {
+        return Ok(Some(std::fs::read_to_string(path)?));
+    }
+
+    // Check if stdin is piped - read from it before crossterm initializes
+    // The "use-dev-tty" feature in crossterm will handle terminal events from /dev/tty
+    if !std::io::stdin().is_terminal() {
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input)?;
+
+        if input.trim().is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(input));
+    }
+
+    Ok(None)
+}
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let args = parse_args();
+    let diff_input = read_diff_input(&args)?;
+
     // Setup terminal
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -28,7 +86,7 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
     // Run app
-    let result = run_app(&mut terminal);
+    let result = run_app(&mut terminal, diff_input).await;
 
     // Restore terminal
     stdout().execute(DisableMouseCapture)?;
@@ -38,12 +96,70 @@ fn main() -> io::Result<()> {
     result
 }
 
-fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
+async fn run_app<B: Backend + Send>(
+    terminal: &mut Terminal<B>,
+    diff_input: Option<String>,
+) -> io::Result<()> {
     let settings = Settings::load();
-    let walkthrough = mock_walkthrough();
-    let mut app = App::new(walkthrough, &settings);
+
+    // If no diff input, use mock data
+    let mut app = if diff_input.is_none() {
+        let walkthrough = mock_walkthrough();
+        App::new(walkthrough, &settings)
+    } else {
+        App::loading(&settings)
+    };
+
     let mut input_handler = InputHandler::new();
 
+    // Create channel for async events
+    let (tx, mut rx) = mpsc::channel::<AppEvent>(32);
+
+    // Start generation if we have diff input
+    if let Some(diff_text) = diff_input {
+        let tx_gen = tx.clone();
+        app.set_loading_status("Parsing diff...".to_string());
+
+        tokio::spawn(async move {
+            match WalkthroughGenerator::new(&diff_text) {
+                Ok(generator) => match generator.generate().await {
+                    Ok(walkthrough) => {
+                        let _ = tx_gen.send(AppEvent::GenerationComplete(walkthrough)).await;
+                    }
+                    Err(e) => {
+                        let _ = tx_gen.send(AppEvent::GenerationError(e.to_string())).await;
+                    }
+                },
+                Err(e) => {
+                    let _ = tx_gen.send(AppEvent::GenerationError(e.to_string())).await;
+                }
+            }
+        });
+    }
+
+    // Spawn terminal event reader using blocking task
+    let tx_term = tx.clone();
+    std::thread::spawn(move || loop {
+        // Use a short poll timeout to keep the loop responsive
+        match event::poll(Duration::from_millis(50)) {
+            Ok(true) => {
+                if let Ok(evt) = event::read() {
+                    if tx_term.blocking_send(AppEvent::Terminal(evt)).is_err() {
+                        break;
+                    }
+                }
+            }
+            Ok(false) => {
+                // No event, continue polling
+            }
+            Err(_) => {
+                // Error polling, sleep briefly and retry
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    });
+
+    // Main event loop
     loop {
         // Get viewport height for scroll calculations
         let viewport_height = terminal.size()?.height.saturating_sub(5) as usize;
@@ -53,16 +169,29 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
             ui::render(frame, &app);
         })?;
 
-        // Handle input
-        if event::poll(Duration::from_millis(100))? {
-            match event::read()? {
-                Event::Key(key) => {
+        // Handle events with timeout for spinner animation
+        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+            Ok(Some(event)) => match event {
+                AppEvent::Terminal(Event::Key(key)) => {
                     input_handler.handle_key(key, &mut app, viewport_height);
                 }
-                Event::Mouse(mouse) => {
+                AppEvent::Terminal(Event::Mouse(mouse)) => {
                     input_handler.handle_mouse(mouse, &mut app, terminal.size()?);
                 }
-                _ => {}
+                AppEvent::Terminal(_) => {}
+                AppEvent::GenerationComplete(walkthrough) => {
+                    app.set_ready(walkthrough);
+                }
+                AppEvent::GenerationError(message) => {
+                    app.set_error(message);
+                }
+            },
+            Ok(None) => {
+                // Channel closed
+                break;
+            }
+            Err(_) => {
+                // Timeout - continue to re-render (for spinner)
             }
         }
 

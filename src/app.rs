@@ -23,7 +23,28 @@ pub enum Divider {
     Horizontal, // Between minimap and chat
 }
 
+/// Application state machine
+#[derive(Debug, Clone)]
+pub enum AppState {
+    /// Generating walkthrough from diff
+    Loading {
+        status: String,
+        steps_received: usize,
+    },
+    /// Walkthrough is ready for viewing
+    Ready,
+    /// An error occurred
+    Error { message: String },
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::Ready
+    }
+}
+
 pub struct App<'a> {
+    pub state: AppState,
     pub walkthrough: Walkthrough,
     pub current_step: usize,
     pub visited_steps: Vec<bool>,
@@ -51,6 +72,7 @@ impl<'a> App<'a> {
         textarea.set_cursor_line_style(ratatui::style::Style::default());
 
         Self {
+            state: AppState::Ready,
             walkthrough,
             current_step: 0,
             visited_steps: vec![false; step_count],
@@ -66,6 +88,71 @@ impl<'a> App<'a> {
             textarea,
             vim_enabled: settings.vim_enabled(),
             vim_mode: VimInputMode::Normal,
+        }
+    }
+
+    /// Create an app in loading state (empty walkthrough)
+    pub fn loading(settings: &Settings) -> Self {
+        let mut textarea = TextArea::default();
+        textarea.set_cursor_line_style(ratatui::style::Style::default());
+
+        Self {
+            state: AppState::Loading {
+                status: "Initializing...".to_string(),
+                steps_received: 0,
+            },
+            walkthrough: Walkthrough { steps: vec![] },
+            current_step: 0,
+            visited_steps: vec![],
+            diff_scroll: 0,
+            chat_scroll: 0,
+            should_quit: false,
+            quit_pending: false,
+            active_pane: ActivePane::Diff,
+            walkthrough_complete: false,
+            left_pane_percent: 50,
+            minimap_percent: 40,
+            dragging: None,
+            textarea,
+            vim_enabled: settings.vim_enabled(),
+            vim_mode: VimInputMode::Normal,
+        }
+    }
+
+    /// Transition to ready state with the given walkthrough
+    pub fn set_ready(&mut self, walkthrough: Walkthrough) {
+        let step_count = walkthrough.step_count();
+        self.walkthrough = walkthrough;
+        self.visited_steps = vec![false; step_count];
+        self.current_step = 0;
+        self.state = AppState::Ready;
+    }
+
+    /// Transition to error state
+    pub fn set_error(&mut self, message: String) {
+        self.state = AppState::Error { message };
+    }
+
+    /// Update loading status
+    pub fn set_loading_status(&mut self, status: String) {
+        if let AppState::Loading { steps_received, .. } = &self.state {
+            self.state = AppState::Loading {
+                status,
+                steps_received: *steps_received,
+            };
+        }
+    }
+
+    /// Add a step during loading (for streaming)
+    #[allow(dead_code)]
+    pub fn add_step(&mut self, step: crate::model::Step) {
+        self.walkthrough.steps.push(step);
+        self.visited_steps.push(false);
+        if let AppState::Loading { status, .. } = &self.state {
+            self.state = AppState::Loading {
+                status: status.clone(),
+                steps_received: self.walkthrough.steps.len(),
+            };
         }
     }
 
