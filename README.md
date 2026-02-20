@@ -14,7 +14,7 @@ Traditional diff viewers present changes in file order, which can be disorientin
 ## Features
 
 - **AI-Powered Walkthroughs**: Claude analyzes diffs and generates step-by-step narratives with explanations
-- **Three-Pane TUI**: Minimap for navigation, explanation panel with chat, and syntax-highlighted diff viewer
+- **Three-Pane TUI**: Minimap for navigation, explanation panel with chat, and diff viewer
 - **Interactive Chat**: Ask questions about any step and get streaming responses
 - **Vim-Style Navigation**: Modal editing with familiar keybindings
 - **Mouse Support**: Click to select steps, drag to resize panes, scroll anywhere
@@ -104,6 +104,7 @@ Docent supports three input modes:
 
 ## Future Ideas
 
+- **Syntax highlighting**: Language-aware diff highlighting for improved readability
 - **GitHub integration**: Review PRs by URL and post comments directly via `gh` CLI or API
 - **Branching conversations**: Start focused sub-threads to drill into specific concerns without losing your place
 - **Session persistence**: Suspend and resume reviews across sessions
