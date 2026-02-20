@@ -5,6 +5,7 @@
 A terminal-based AI-guided code review walkthrough tool. Docent transforms raw git diffs into structured, narrative-driven walkthroughs powered by Claude AI.
 
 ![Docent screenshot](assets/screenshot.png)
+*Reviewing docent in docent!*
 
 ## Why Docent?
 
@@ -67,7 +68,6 @@ docent --mock
 | `Ctrl+d` / `Ctrl+u` | Half-page scroll |
 | `gg` / `G` | Jump to top/bottom of diff |
 | `n` / `p` | Next/previous step |
-| `]]` / `[[` | Next/previous step (vim-style) |
 | `Tab` / `Shift+Tab` | Cycle through panes |
 | `Enter` | Mark step complete and advance |
 | `u` | Undo step completion |

@@ -8,9 +8,7 @@ use crate::ui::diff_viewer;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingKey {
     None,
-    G,            // Waiting for second 'g' for gg
-    CloseBracket, // Waiting for second ']' for ]]
-    OpenBracket,  // Waiting for second '[' for [[
+    G, // Waiting for second 'g' for gg
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +88,21 @@ impl InputHandler {
             return;
         }
 
+        // Ctrl+n/p for scrolling (works in insert mode too)
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('n') => {
+                    app.scroll_chat_down(1);
+                    return;
+                }
+                KeyCode::Char('p') => {
+                    app.scroll_chat_up(1);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         // Enter submits, Shift+Enter for newline
         if key.code == KeyCode::Enter {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -100,7 +113,8 @@ impl InputHandler {
             return;
         }
 
-        // Forward to textarea (handles readline-style bindings by default)
+        // Any other input exits scrollback mode and goes to textarea
+        app.exit_chat_scrollback();
         let input = Input::from(key);
         app.textarea.input(input);
     }
@@ -163,8 +177,10 @@ impl InputHandler {
         }
 
         match key.code {
-            // Escape does nothing in vim normal (already in normal mode)
-            KeyCode::Esc => {}
+            // Escape exits scrollback mode if active, otherwise does nothing
+            KeyCode::Esc => {
+                app.exit_chat_scrollback();
+            }
 
             // Enter insert mode
             KeyCode::Char('i') => {
@@ -296,20 +312,6 @@ impl InputHandler {
                 }
                 return;
             }
-            PendingKey::CloseBracket => {
-                self.pending = PendingKey::None;
-                if key.code == KeyCode::Char(']') {
-                    app.next_step();
-                }
-                return;
-            }
-            PendingKey::OpenBracket => {
-                self.pending = PendingKey::None;
-                if key.code == KeyCode::Char('[') {
-                    app.prev_step();
-                }
-                return;
-            }
             PendingKey::None => {}
         }
 
@@ -389,18 +391,12 @@ impl InputHandler {
             // Step navigation
             KeyCode::Char('n') => app.next_step(),
             KeyCode::Char('p') => app.prev_step(),
-            KeyCode::Char(']') => {
-                self.pending = PendingKey::CloseBracket;
-            }
 
             // Complete step and advance (or finish walkthrough)
             KeyCode::Enter => app.complete_step_and_advance(),
 
             // Undo step completion
             KeyCode::Char('u') => app.uncomplete_step(),
-            KeyCode::Char('[') => {
-                self.pending = PendingKey::OpenBracket;
-            }
 
             _ => {}
         }

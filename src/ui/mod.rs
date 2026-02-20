@@ -170,6 +170,15 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
                         "-- INSERT --",
                         Style::default().fg(Color::DarkGray),
                     ))
+                } else if app.chat_scrollback_mode {
+                    // Scrollback mode
+                    Line::from(vec![
+                        Span::styled("-- SCROLLBACK -- ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(" Ctrl+n/p ", Style::default().fg(Color::Yellow)),
+                        Span::raw("scroll "),
+                        Span::styled(" Esc ", Style::default().fg(Color::Yellow)),
+                        Span::raw("exit"),
+                    ])
                 } else {
                     // Vim normal mode
                     Line::from(vec![

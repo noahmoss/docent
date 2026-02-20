@@ -170,24 +170,20 @@ fn render_chat_history(frame: &mut Frame, area: Rect, app: &App) {
         vec![Line::from("No step selected")]
     };
 
-    // Calculate scroll position
-    let scroll = if app.chat_follow_output {
-        // Scroll to bottom: estimate wrapped line count
-        let line_count: usize = lines.iter()
-            .map(|line| {
-                let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-                ((width / area.width.max(1) as usize) + 1).max(1)
-            })
-            .sum();
-        line_count.saturating_sub(area.height as usize) as u16
-    } else {
-        app.chat_scroll as u16
-    };
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
 
-    let paragraph = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-    frame.render_widget(paragraph, area);
+    // Get actual wrapped line count
+    let line_count = paragraph.line_count(area.width) as usize;
+    let max_scroll = line_count.saturating_sub(area.height as usize);
+
+    // Store for use by scroll functions
+    app.chat_max_scroll.set(max_scroll);
+
+    // chat_scroll is "lines from bottom", convert to "lines from top"
+    let scroll_from_bottom = app.chat_scroll.min(max_scroll);
+    let scroll = max_scroll.saturating_sub(scroll_from_bottom) as u16;
+
+    frame.render_widget(paragraph.scroll((scroll, 0)), area);
 }
 
 fn render_input_box(frame: &mut Frame, area: Rect, app: &App) {

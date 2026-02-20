@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use tui_textarea::TextArea;
 
 use crate::model::{Message, Walkthrough};
@@ -67,8 +68,10 @@ pub struct App<'a> {
     pub chat_pending: Option<usize>,
     // Pending chat request to be processed by main loop (step_index, walkthrough, messages)
     pub chat_request: Option<(usize, Walkthrough, Vec<Message>)>,
-    // When true, chat should scroll to show latest content
-    pub chat_follow_output: bool,
+    // When true, user is in scrollback mode (manual scroll, no auto-follow)
+    pub chat_scrollback_mode: bool,
+    // Last known max scroll value (updated by render via Cell for interior mutability)
+    pub chat_max_scroll: Cell<usize>,
 }
 
 impl<'a> App<'a> {
@@ -96,7 +99,8 @@ impl<'a> App<'a> {
             vim_mode: VimInputMode::Normal,
             chat_pending: None,
             chat_request: None,
-            chat_follow_output: false,
+            chat_scrollback_mode: false,
+            chat_max_scroll: Cell::new(0),
         }
     }
 
@@ -127,7 +131,8 @@ impl<'a> App<'a> {
             vim_mode: VimInputMode::Normal,
             chat_pending: None,
             chat_request: None,
-            chat_follow_output: false,
+            chat_scrollback_mode: false,
+            chat_max_scroll: Cell::new(0),
         }
     }
 
@@ -320,8 +325,7 @@ impl<'a> App<'a> {
                 // First chunk - create new assistant message
                 step.messages.push(Message::assistant(chunk));
             }
-            // Follow output - render will scroll to bottom
-            self.chat_follow_output = true;
+            // Render will auto-scroll if not in scrollback mode
         }
     }
 
@@ -346,14 +350,27 @@ impl<'a> App<'a> {
         self.textarea.lines().iter().all(|l| l.is_empty())
     }
 
+    /// Scroll up (towards older content). chat_scroll = lines from bottom.
     pub fn scroll_chat_up(&mut self, amount: usize) {
-        self.chat_scroll = self.chat_scroll.saturating_sub(amount);
-        self.chat_follow_output = false;
+        let max = self.chat_max_scroll.get();
+        if max == 0 {
+            return; // Nothing to scroll
+        }
+        self.chat_scrollback_mode = true;
+        self.chat_scroll = self.chat_scroll.saturating_add(amount).min(max);
     }
 
+    /// Scroll down (towards newer content).
     pub fn scroll_chat_down(&mut self, amount: usize) {
-        self.chat_scroll = self.chat_scroll.saturating_add(amount);
-        self.chat_follow_output = false;
+        self.chat_scroll = self.chat_scroll.saturating_sub(amount);
+        // If we've scrolled back to bottom, exit scrollback mode
+        if self.chat_scroll == 0 {
+            self.chat_scrollback_mode = false;
+        }
+    }
+
+    pub fn exit_chat_scrollback(&mut self) {
+        self.chat_scrollback_mode = false;
     }
 
     pub fn quit(&mut self) {
