@@ -93,9 +93,29 @@ impl InputHandler {
             if app.vim_enabled {
                 app.vim_mode = VimInputMode::Normal;
             } else {
-                app.set_active_pane(ActivePane::Diff);
+                // In non-vim mode, Esc exits scrollback or switches pane
+                if app.chat_scrollback_mode {
+                    app.exit_chat_scrollback();
+                } else {
+                    app.set_active_pane(ActivePane::Diff);
+                }
             }
             return;
+        }
+
+        // Ctrl+n/p for scrollback (works in both vim and non-vim mode)
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('n') => {
+                    app.scroll_chat_down(1);
+                    return;
+                }
+                KeyCode::Char('p') => {
+                    app.scroll_chat_up(1);
+                    return;
+                }
+                _ => {}
+            }
         }
 
         // Enter submits, Shift+Enter for newline

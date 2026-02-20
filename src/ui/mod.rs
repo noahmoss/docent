@@ -169,13 +169,8 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         match app.active_pane {
             ActivePane::Chat => {
-                let in_insert = !app.vim_enabled || app.vim_mode == VimInputMode::Insert;
-                if in_insert {
-                    Line::from(Span::styled(
-                        "-- INSERT --",
-                        Style::default().fg(Color::DarkGray),
-                    ))
-                } else if app.chat_scrollback_mode {
+                if app.chat_scrollback_mode {
+                    // Scrollback mode (works in both vim and non-vim)
                     let mut spans = vec![Span::styled(
                         "-- SCROLLBACK -- ",
                         Style::default().fg(Color::DarkGray),
@@ -183,7 +178,21 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
                     spans.extend(help("Ctrl+n/p", "scroll"));
                     spans.extend(help("Esc", "exit"));
                     Line::from(spans)
+                } else if app.vim_enabled && app.vim_mode == VimInputMode::Insert {
+                    // Vim insert mode
+                    Line::from(Span::styled(
+                        "-- INSERT --",
+                        Style::default().fg(Color::DarkGray),
+                    ))
+                } else if app.vim_enabled {
+                    // Vim normal mode
+                    let mut spans = vec![];
+                    spans.extend(help("Ctrl+n/p", "scroll"));
+                    spans.extend(help("Tab", "switch pane"));
+                    spans.extend(help("Ctrl+C", "quit"));
+                    Line::from(spans)
                 } else {
+                    // Non-vim mode
                     let mut spans = vec![];
                     spans.extend(help("Ctrl+n/p", "scroll"));
                     spans.extend(help("Tab", "switch pane"));
