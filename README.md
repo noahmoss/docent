@@ -102,27 +102,14 @@ Docent supports three input modes:
 - **Always**: Force vim-style editing in chat input
 - **Never**: Use standard readline bindings
 
-## Layout
+## Future Ideas
 
-```
-┌──────────────────┬────────────────────────────────────┐
-│ Minimap          │                                    │
-│ ○ Step 1         │  Diff Viewer                       │
-│ ✓ Step 2         │                                    │
-│ ● Step 3 ←       │  - removed line                    │
-│ ○ Step 4         │  + added line                      │
-├──────────────────┤                                    │
-│ Explanation      │                                    │
-│                  │                                    │
-│ AI summary of    │                                    │
-│ current step...  │                                    │
-│                  │                                    │
-│ > Your question  │                                    │
-│ AI response...   │                                    │
-│                  │                                    │
-│ [Chat input]     │                                    │
-└──────────────────┴────────────────────────────────────┘
-```
+- **GitHub integration**: Review PRs by URL and post comments directly via `gh` CLI or API
+- **Branching conversations**: Start focused sub-threads to drill into specific concerns without losing your place
+- **Session persistence**: Suspend and resume reviews across sessions
+- **Inline edits**: Shell out to Claude Code to make changes mid-review, then continue reviewing the updated diff
+- **Granularity control**: Request more or fewer steps based on review depth ("high-level overview" vs "detailed walkthrough")
+- **Local LLM support**: Use Ollama or similar for offline/private reviews
 
 ## Development
 
