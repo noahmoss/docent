@@ -1,5 +1,7 @@
 # Docent
 
+> **Note:** This project is in early development (pre-alpha). Expect rough edges and breaking changes.
+
 A terminal-based AI-guided code review walkthrough tool. Docent transforms raw git diffs into structured, narrative-driven walkthroughs powered by Claude AI.
 
 ![Docent screenshot](assets/screenshot.png)
