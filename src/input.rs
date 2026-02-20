@@ -45,6 +45,16 @@ impl InputHandler {
         // Any other key clears quit pending
         app.quit_pending = false;
 
+        // Handle error state
+        if app.is_error() {
+            match key.code {
+                KeyCode::Char('r') => app.request_retry(),
+                KeyCode::Char('q') => app.quit(),
+                _ => {}
+            }
+            return;
+        }
+
         // When Chat pane is active, route to editor handling
         if app.active_pane == ActivePane::Chat {
             self.handle_chat_input(key, app);

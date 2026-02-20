@@ -72,6 +72,10 @@ pub struct App<'a> {
     pub chat_scrollback_mode: bool,
     // Last known max scroll value (updated by render via Cell for interior mutability)
     pub chat_max_scroll: Cell<usize>,
+    // Set to true when user requests retry from error state
+    pub retry_requested: bool,
+    // Original diff input for retry
+    pub diff_input: Option<String>,
 }
 
 impl<'a> App<'a> {
@@ -101,6 +105,8 @@ impl<'a> App<'a> {
             chat_request: None,
             chat_scrollback_mode: false,
             chat_max_scroll: Cell::new(0),
+            retry_requested: false,
+            diff_input: None,
         }
     }
 
@@ -133,6 +139,8 @@ impl<'a> App<'a> {
             chat_request: None,
             chat_scrollback_mode: false,
             chat_max_scroll: Cell::new(0),
+            retry_requested: false,
+            diff_input: None,
         }
     }
 
@@ -148,6 +156,20 @@ impl<'a> App<'a> {
     /// Transition to error state
     pub fn set_error(&mut self, message: String) {
         self.state = AppState::Error { message };
+    }
+
+    /// Check if in error state
+    pub fn is_error(&self) -> bool {
+        matches!(self.state, AppState::Error { .. })
+    }
+
+    /// Request retry - transitions back to loading state
+    pub fn request_retry(&mut self) {
+        self.state = AppState::Loading {
+            status: "Retrying...".to_string(),
+            steps_received: 0,
+        };
+        self.retry_requested = true;
     }
 
     /// Update loading status

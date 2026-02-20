@@ -39,7 +39,7 @@ fn render_ready(frame: &mut Frame, app: &App) {
     render_help_bar(frame, chunks[1], app);
 }
 
-fn render_loading(frame: &mut Frame, area: Rect, status: &str, steps_received: usize) {
+fn render_loading(frame: &mut Frame, area: Rect, status: &str, _steps_received: usize) {
     let block = Block::default()
         .title(" Generating Walkthrough ")
         .borders(Borders::ALL)
@@ -64,8 +64,6 @@ fn render_loading(frame: &mut Frame, area: Rect, status: &str, steps_received: u
             Span::raw(" "),
             Span::raw(status),
         ]),
-        Line::from(""),
-        Line::from(format!("Steps received: {}", steps_received)),
         Line::from(""),
         Line::from(Span::styled(
             "Press Ctrl+C to cancel",

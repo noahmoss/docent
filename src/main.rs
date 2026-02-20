@@ -114,7 +114,9 @@ async fn run_app<B: Backend + Send>(
         let walkthrough = mock_walkthrough();
         App::new(walkthrough, &settings)
     } else {
-        App::loading(&settings)
+        let mut app = App::loading(&settings);
+        app.diff_input = diff_input.clone();
+        app
     };
 
     let mut input_handler = InputHandler::new();
@@ -125,7 +127,7 @@ async fn run_app<B: Backend + Send>(
     // Start generation if we have diff input
     if let Some(diff_text) = diff_input {
         let tx_gen = tx.clone();
-        app.set_loading_status("Parsing diff...".to_string());
+        app.set_loading_status("Generating walkthrough...".to_string());
 
         tokio::spawn(async move {
             match WalkthroughGenerator::new(&diff_text) {
@@ -252,6 +254,32 @@ async fn run_app<B: Backend + Send>(
         // Check for quit
         if app.should_quit {
             break;
+        }
+
+        // Check for retry request
+        if app.retry_requested {
+            app.retry_requested = false;
+            if let Some(ref diff_text) = app.diff_input {
+                let tx_gen = tx.clone();
+                let diff_text = diff_text.clone();
+                app.set_loading_status("Generating walkthrough...".to_string());
+
+                tokio::spawn(async move {
+                    match WalkthroughGenerator::new(&diff_text) {
+                        Ok(generator) => match generator.generate().await {
+                            Ok(walkthrough) => {
+                                let _ = tx_gen.send(AppEvent::GenerationComplete(walkthrough)).await;
+                            }
+                            Err(e) => {
+                                let _ = tx_gen.send(AppEvent::GenerationError(e.to_string())).await;
+                            }
+                        },
+                        Err(e) => {
+                            let _ = tx_gen.send(AppEvent::GenerationError(e.to_string())).await;
+                        }
+                    }
+                });
+            }
         }
     }
 
