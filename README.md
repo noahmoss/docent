@@ -30,7 +30,7 @@ Traditional diff viewers present changes in file order, which can be disorientin
 ### Build from source
 
 ```bash
-git clone https://github.com/yourusername/docent
+git clone https://github.com/noahmoss/docent
 cd docent
 cargo build --release
 ```
@@ -60,8 +60,6 @@ docent --mock
 
 ## Keybindings
 
-### Navigation (Normal Mode)
-
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Scroll diff down/up |
@@ -70,17 +68,8 @@ docent --mock
 | `n` / `p` | Next/previous step |
 | `Tab` / `Shift+Tab` | Cycle through panes |
 | `Enter` | Mark step complete and advance |
-| `u` | Undo step completion |
 | `i` | Enter chat input mode |
 | `Ctrl+c` | Quit |
-
-### Chat Input (Insert Mode)
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Send message |
-| `Shift+Enter` | Insert newline |
-| `Esc` | Return to normal mode |
 
 ### Mouse
 
@@ -89,18 +78,6 @@ docent --mock
 - Drag the vertical divider to resize left/right panes
 - Drag the horizontal divider to resize minimap/explanation
 - Scroll wheel works in any pane
-
-## Configuration
-
-Docent stores settings in `~/.docent/settings.json`.
-
-### Vim Mode
-
-Docent supports three input modes:
-
-- **Auto** (default): Detects vim mode from `~/.inputrc`
-- **Always**: Force vim-style editing in chat input
-- **Never**: Use standard readline bindings
 
 ## Future Ideas
 

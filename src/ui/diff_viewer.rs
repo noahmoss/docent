@@ -3,10 +3,12 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph},
+    widgets::{Borders, Paragraph},
 };
 
-use crate::app::{ActivePane, App};
+use super::pane_block;
+use crate::app::App;
+use crate::layout::Pane;
 use crate::colors;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -41,35 +43,30 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let total_lines = lines.len();
 
-    // Apply scroll offset (clamped to valid range)
+    // Apply scroll offset (clamped to valid range, persisted to prevent phantom scrolling)
     let max_scroll = total_lines.saturating_sub(inner_height);
-    let scroll = app.diff_scroll.min(max_scroll);
+    let scroll = app.diff_scroll.clamped(max_scroll);
     let visible_lines: Vec<Line> = lines
         .into_iter()
         .skip(scroll)
         .take(inner_height)
         .collect();
 
-    let scroll_indicator = if total_lines > inner_height {
-        let percent = (scroll * 100) / max_scroll.max(1);
+    let scroll_indicator = if total_lines > inner_height && max_scroll > 0 {
+        let percent = (scroll * 100) / max_scroll;
         format!(" Diff [{}%] ", percent.min(100))
     } else {
         " Diff ".to_string()
     };
 
-    let border_color = if app.active_pane == ActivePane::Diff {
-        colors::BORDER_ACTIVE
+    let is_active = app.layout.active_pane == Pane::Diff;
+    let borders = if app.layout.is_zoomed() {
+        Borders::TOP | Borders::BOTTOM
     } else {
-        colors::BORDER_INACTIVE
+        Borders::TOP | Borders::RIGHT | Borders::BOTTOM
     };
-
-    let paragraph = Paragraph::new(visible_lines).block(
-        Block::default()
-            .title(scroll_indicator)
-            .borders(Borders::TOP | Borders::RIGHT | Borders::BOTTOM)
-            .border_style(Style::default().fg(border_color))
-            .padding(Padding::horizontal(1)),
-    );
+    let block = pane_block(&scroll_indicator, borders, is_active);
+    let paragraph = Paragraph::new(visible_lines).block(block);
 
     frame.render_widget(paragraph, area);
 }
@@ -98,15 +95,7 @@ fn style_diff_line(line: &str) -> Line<'static> {
 }
 
 pub fn content_height(app: &App) -> usize {
-    if let Some(step) = app.current_step_data() {
-        let mut count = 0;
-        for hunk in &step.hunks {
-            count += 2; // header + blank line
-            count += hunk.content.lines().count();
-            count += 1; // trailing blank
-        }
-        count
-    } else {
-        1
-    }
+    app.current_step_data()
+        .map(|step| step.diff_line_count())
+        .unwrap_or(0)
 }

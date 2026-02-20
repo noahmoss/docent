@@ -1,15 +1,18 @@
 mod api;
 mod app;
 mod colors;
+mod constants;
 mod diff;
+mod editor;
 mod generation;
 mod input;
+mod layout;
 mod model;
+mod scroll;
 mod settings;
 mod ui;
 
 use std::io::{self, stdout, IsTerminal, Read};
-use std::time::Duration;
 
 use crossterm::{
     ExecutableCommand,
@@ -19,11 +22,12 @@ use crossterm::{
 use ratatui::prelude::*;
 use tokio::sync::mpsc;
 
-use app::App;
 use api::ClaudeClient;
+use app::App;
+use constants::{EVENT_POLL_INTERVAL, EVENT_RECV_TIMEOUT, VIEWPORT_HEIGHT_OFFSET};
 use generation::WalkthroughGenerator;
 use input::InputHandler;
-use model::mock_walkthrough;
+use model::{Message, Walkthrough, mock_walkthrough};
 use settings::Settings;
 
 /// Events that can occur in the app
@@ -31,7 +35,7 @@ enum AppEvent {
     /// Terminal input event
     Terminal(Event),
     /// Walkthrough generation completed
-    GenerationComplete(model::Walkthrough),
+    GenerationComplete(Walkthrough),
     /// Walkthrough generation failed
     GenerationError(String),
     /// Chat response chunk received (step_index, text_chunk)
@@ -40,6 +44,93 @@ enum AppEvent {
     ChatComplete(usize),
     /// Chat request failed (step_index, error_message)
     ChatError(usize, String),
+}
+
+/// Spawns a task to generate a walkthrough from diff text
+fn spawn_walkthrough_generation(tx: mpsc::Sender<AppEvent>, diff_text: String) {
+    tokio::spawn(async move {
+        match WalkthroughGenerator::new(&diff_text) {
+            Ok(generator) => match generator.generate().await {
+                Ok(walkthrough) => {
+                    let _ = tx.send(AppEvent::GenerationComplete(walkthrough)).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::GenerationError(e.to_string())).await;
+                }
+            },
+            Err(e) => {
+                let _ = tx.send(AppEvent::GenerationError(e.to_string())).await;
+            }
+        }
+    });
+}
+
+/// Spawns a thread to read terminal events and forward them to the event channel
+fn spawn_terminal_reader(tx: mpsc::Sender<AppEvent>) {
+    std::thread::spawn(move || loop {
+        match event::poll(EVENT_POLL_INTERVAL) {
+            Ok(true) => {
+                if let Ok(evt) = event::read()
+                    && tx.blocking_send(AppEvent::Terminal(evt)).is_err()
+                {
+                    break;
+                }
+            }
+            Ok(false) => {}
+            Err(_) => {
+                std::thread::sleep(EVENT_POLL_INTERVAL);
+            }
+        }
+    });
+}
+
+/// Spawns a task to handle streaming chat with the Claude API
+fn spawn_chat_handler(
+    tx: mpsc::Sender<AppEvent>,
+    step_index: usize,
+    walkthrough: Walkthrough,
+    messages: Vec<Message>,
+) {
+    tokio::spawn(async move {
+        match ClaudeClient::from_env() {
+            Ok(client) => {
+                let (chunk_tx, mut chunk_rx) = mpsc::channel::<String>(32);
+
+                let tx_chunks = tx.clone();
+                let forward_task = tokio::spawn(async move {
+                    while let Some(chunk) = chunk_rx.recv().await {
+                        if tx_chunks
+                            .send(AppEvent::ChatChunk(step_index, chunk))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+
+                match client
+                    .chat_streaming(&walkthrough, step_index, &messages, chunk_tx)
+                    .await
+                {
+                    Ok(()) => {
+                        let _ = forward_task.await;
+                        let _ = tx.send(AppEvent::ChatComplete(step_index)).await;
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(AppEvent::ChatError(step_index, e.to_string()))
+                            .await;
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(AppEvent::ChatError(step_index, e.to_string()))
+                    .await;
+            }
+        }
+    });
 }
 
 #[derive(Debug)]
@@ -109,10 +200,8 @@ async fn run_app<B: Backend + Send>(
 ) -> io::Result<()> {
     let settings = Settings::load();
 
-    // If no diff input, use mock data
     let mut app = if diff_input.is_none() {
-        let walkthrough = mock_walkthrough();
-        App::new(walkthrough, &settings)
+        App::new(mock_walkthrough(), &settings)
     } else {
         let mut app = App::loading(&settings);
         app.diff_input = diff_input.clone();
@@ -120,168 +209,76 @@ async fn run_app<B: Backend + Send>(
     };
 
     let mut input_handler = InputHandler::new();
-
-    // Create channel for async events
     let (tx, mut rx) = mpsc::channel::<AppEvent>(32);
 
-    // Start generation if we have diff input
     if let Some(diff_text) = diff_input {
-        let tx_gen = tx.clone();
         app.set_loading_status("Generating walkthrough...".to_string());
-
-        tokio::spawn(async move {
-            match WalkthroughGenerator::new(&diff_text) {
-                Ok(generator) => match generator.generate().await {
-                    Ok(walkthrough) => {
-                        let _ = tx_gen.send(AppEvent::GenerationComplete(walkthrough)).await;
-                    }
-                    Err(e) => {
-                        let _ = tx_gen.send(AppEvent::GenerationError(e.to_string())).await;
-                    }
-                },
-                Err(e) => {
-                    let _ = tx_gen.send(AppEvent::GenerationError(e.to_string())).await;
-                }
-            }
-        });
+        spawn_walkthrough_generation(tx.clone(), diff_text);
     }
 
-    // Spawn terminal event reader using blocking task
-    let tx_term = tx.clone();
-    std::thread::spawn(move || loop {
-        // Use a short poll timeout to keep the loop responsive
-        match event::poll(Duration::from_millis(50)) {
-            Ok(true) => {
-                if let Ok(evt) = event::read() {
-                    if tx_term.blocking_send(AppEvent::Terminal(evt)).is_err() {
-                        break;
-                    }
-                }
-            }
-            Ok(false) => {
-                // No event, continue polling
-            }
-            Err(_) => {
-                // Error polling, sleep briefly and retry
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-    });
+    spawn_terminal_reader(tx.clone());
 
-    // Main event loop
     loop {
-        // Get viewport height for scroll calculations
-        let viewport_height = terminal.size()?.height.saturating_sub(5) as usize;
+        let viewport_height = terminal.size()?.height.saturating_sub(VIEWPORT_HEIGHT_OFFSET) as usize;
 
-        // Render
         terminal.draw(|frame| {
             ui::render(frame, &app);
         })?;
 
-        // Handle events with timeout for spinner animation
-        match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
-            Ok(Some(event)) => match event {
-                AppEvent::Terminal(Event::Key(key)) => {
-                    input_handler.handle_key(key, &mut app, viewport_height);
-                }
-                AppEvent::Terminal(Event::Mouse(mouse)) => {
-                    input_handler.handle_mouse(mouse, &mut app, terminal.size()?);
-                }
-                AppEvent::Terminal(_) => {}
-                AppEvent::GenerationComplete(walkthrough) => {
-                    app.set_ready(walkthrough);
-                }
-                AppEvent::GenerationError(message) => {
-                    app.set_error(message);
-                }
-                AppEvent::ChatChunk(step_index, chunk) => {
-                    app.receive_chat_chunk(step_index, chunk);
-                }
-                AppEvent::ChatComplete(step_index) => {
-                    app.receive_chat_complete(step_index);
-                }
-                AppEvent::ChatError(step_index, error) => {
-                    app.receive_chat_error(step_index, error);
-                }
-            },
-            Ok(None) => {
-                // Channel closed
-                break;
-            }
-            Err(_) => {
-                // Timeout - continue to re-render (for spinner)
-            }
+        if let Ok(Some(event)) = tokio::time::timeout(EVENT_RECV_TIMEOUT, rx.recv()).await {
+            handle_app_event(event, &mut app, &mut input_handler, terminal, viewport_height)?;
         }
 
-        // Check for pending chat requests
         if let Some((step_index, walkthrough, messages)) = app.chat_request.take() {
-            let tx_chat = tx.clone();
-            tokio::spawn(async move {
-                match ClaudeClient::from_env() {
-                    Ok(client) => {
-                        // Create channel for streaming chunks
-                        let (chunk_tx, mut chunk_rx) = mpsc::channel::<String>(32);
-
-                        // Spawn task to forward chunks to main event loop
-                        let tx_chunks = tx_chat.clone();
-                        let forward_task = tokio::spawn(async move {
-                            while let Some(chunk) = chunk_rx.recv().await {
-                                if tx_chunks.send(AppEvent::ChatChunk(step_index, chunk)).await.is_err() {
-                                    break;
-                                }
-                            }
-                        });
-
-                        // Run streaming chat
-                        match client.chat_streaming(&walkthrough, step_index, &messages, chunk_tx).await {
-                            Ok(()) => {
-                                // Wait for forward task to complete
-                                let _ = forward_task.await;
-                                let _ = tx_chat.send(AppEvent::ChatComplete(step_index)).await;
-                            }
-                            Err(e) => {
-                                let _ = tx_chat.send(AppEvent::ChatError(step_index, e.to_string())).await;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx_chat.send(AppEvent::ChatError(step_index, e.to_string())).await;
-                    }
-                }
-            });
+            spawn_chat_handler(tx.clone(), step_index, walkthrough, messages);
         }
 
-        // Check for quit
         if app.should_quit {
             break;
         }
 
-        // Check for retry request
         if app.retry_requested {
             app.retry_requested = false;
-            if let Some(ref diff_text) = app.diff_input {
-                let tx_gen = tx.clone();
-                let diff_text = diff_text.clone();
+            if let Some(diff_text) = app.diff_input.clone() {
                 app.set_loading_status("Generating walkthrough...".to_string());
-
-                tokio::spawn(async move {
-                    match WalkthroughGenerator::new(&diff_text) {
-                        Ok(generator) => match generator.generate().await {
-                            Ok(walkthrough) => {
-                                let _ = tx_gen.send(AppEvent::GenerationComplete(walkthrough)).await;
-                            }
-                            Err(e) => {
-                                let _ = tx_gen.send(AppEvent::GenerationError(e.to_string())).await;
-                            }
-                        },
-                        Err(e) => {
-                            let _ = tx_gen.send(AppEvent::GenerationError(e.to_string())).await;
-                        }
-                    }
-                });
+                spawn_walkthrough_generation(tx.clone(), diff_text);
             }
         }
     }
 
+    Ok(())
+}
+
+fn handle_app_event<B: Backend>(
+    event: AppEvent,
+    app: &mut App,
+    input_handler: &mut InputHandler,
+    terminal: &Terminal<B>,
+    viewport_height: usize,
+) -> io::Result<()> {
+    match event {
+        AppEvent::Terminal(Event::Key(key)) => {
+            input_handler.handle_key(key, app, viewport_height);
+        }
+        AppEvent::Terminal(Event::Mouse(mouse)) => {
+            input_handler.handle_mouse(mouse, app, terminal.size()?);
+        }
+        AppEvent::Terminal(_) => {}
+        AppEvent::GenerationComplete(walkthrough) => {
+            app.set_ready(walkthrough);
+        }
+        AppEvent::GenerationError(message) => {
+            app.set_error(message);
+        }
+        AppEvent::ChatChunk(step_index, chunk) => {
+            app.receive_chat_chunk(step_index, chunk);
+        }
+        AppEvent::ChatComplete(step_index) => {
+            app.receive_chat_complete(step_index);
+        }
+        AppEvent::ChatError(step_index, error) => {
+            app.receive_chat_error(step_index, error);
+        }
+    }
     Ok(())
 }

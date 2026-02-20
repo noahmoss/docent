@@ -4,11 +4,14 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::app::{ActivePane, App};
+use super::pane_block;
+use crate::app::App;
+use crate::layout::Pane;
 use crate::colors;
+use crate::constants::{INPUT_MAX_LINES, INPUT_MIN_LINES};
 use crate::model::MessageRole;
 
 /// Parse markdown text and return styled spans.
@@ -65,24 +68,18 @@ fn parse_markdown(text: &str) -> Vec<Span<'static>> {
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let border_color = if app.active_pane == ActivePane::Chat {
-        colors::BORDER_ACTIVE
+    let is_active = app.layout.active_pane == Pane::Chat;
+    let borders = if app.layout.is_zoomed() {
+        Borders::TOP | Borders::BOTTOM
     } else {
-        colors::BORDER_INACTIVE
+        Borders::ALL
     };
-
-    // Outer block for the entire chat pane
-    let outer_block = Block::default()
-        .title(" Chat ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color))
-        .padding(Padding::horizontal(1));
-
+    let outer_block = pane_block(" Chat ", borders, is_active);
     let inner_area = outer_block.inner(area);
     frame.render_widget(outer_block, area);
 
-    // Calculate input height based on content (min 1, max 10 lines)
-    let input_lines = app.textarea.lines().len().max(1).min(10) as u16;
+    let input_lines =
+        (app.editor.textarea.lines().len() as u16).clamp(INPUT_MIN_LINES, INPUT_MAX_LINES);
     let input_height = input_lines + 1; // +1 for the top border
 
     let chunks = Layout::default()
@@ -172,16 +169,9 @@ fn render_chat_history(frame: &mut Frame, area: Rect, app: &App) {
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
 
-    // Get actual wrapped line count
     let line_count = paragraph.line_count(area.width) as usize;
     let max_scroll = line_count.saturating_sub(area.height as usize);
-
-    // Store for use by scroll functions
-    app.chat_max_scroll.set(max_scroll);
-
-    // chat_scroll is "lines from bottom", convert to "lines from top"
-    let scroll_from_bottom = app.chat_scroll.min(max_scroll);
-    let scroll = max_scroll.saturating_sub(scroll_from_bottom) as u16;
+    let scroll = app.chat_scroll.position_from_top(max_scroll) as u16;
 
     frame.render_widget(paragraph.scroll((scroll, 0)), area);
 }
@@ -208,7 +198,7 @@ fn render_input_box(frame: &mut Frame, area: Rect, app: &App) {
     let prompt = Paragraph::new(Line::from(Span::styled("> ", prompt_style)));
     frame.render_widget(prompt, chunks[0]);
 
-    let chat_focused = app.active_pane == ActivePane::Chat;
+    let chat_focused = app.layout.active_pane == Pane::Chat;
 
     // Show placeholder or the textarea
     if app.textarea_is_empty() && !chat_focused {
@@ -217,7 +207,7 @@ fn render_input_box(frame: &mut Frame, area: Rect, app: &App) {
         let input = Paragraph::new(Line::from(Span::styled(placeholder, placeholder_style)));
         frame.render_widget(input, chunks[1]);
     } else {
-        let mut textarea = app.textarea.clone();
+        let mut textarea = app.editor.textarea.clone();
 
         // Show cursor when Chat pane is focused
         if chat_focused {

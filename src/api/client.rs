@@ -79,12 +79,13 @@ impl ClaudeClient {
 
         // Find the tool_use content block
         for content in api_response.content {
-            if content.content_type == "tool_use" && content.name.as_deref() == Some("create_walkthrough") {
-                if let Some(input) = content.input {
-                    let walkthrough: CreateWalkthroughResponse = serde_json::from_value(input)
-                        .map_err(|e| ApiError::Parse(format!("failed to parse tool input: {}", e)))?;
-                    return Ok(walkthrough);
-                }
+            if content.content_type == "tool_use"
+                && content.name.as_deref() == Some("create_walkthrough")
+                && let Some(input) = content.input
+            {
+                let walkthrough: CreateWalkthroughResponse = serde_json::from_value(input)
+                    .map_err(|e| ApiError::Parse(format!("failed to parse tool input: {}", e)))?;
+                return Ok(walkthrough);
             }
         }
 

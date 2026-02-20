@@ -54,6 +54,21 @@ pub struct Step {
     pub messages: Vec<Message>,
 }
 
+impl Step {
+    /// Calculates the total number of display lines for this step's diff content.
+    /// Includes file headers, blank lines, and diff content lines.
+    pub fn diff_line_count(&self) -> usize {
+        self.hunks
+            .iter()
+            .map(|hunk| {
+                2 // file header + blank line after header
+                + hunk.content.lines().count()
+                + 1 // trailing blank line
+            })
+            .sum()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Walkthrough {
     pub steps: Vec<Step>,

@@ -7,10 +7,30 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
-use crate::app::{ActivePane, App, AppState, VimInputMode};
+use crate::app::{App, AppState};
+use crate::editor::VimInputMode;
+use crate::layout::Pane;
+use crate::colors;
+use crate::constants::{
+    ERROR_DIALOG_HEIGHT, ERROR_DIALOG_WIDTH, LOADING_DIALOG_HEIGHT, LOADING_DIALOG_WIDTH,
+};
+
+/// Creates a styled block for a pane with consistent styling.
+pub fn pane_block(title: &str, borders: Borders, is_active: bool) -> Block<'_> {
+    let border_color = if is_active {
+        colors::BORDER_ACTIVE
+    } else {
+        colors::BORDER_INACTIVE
+    };
+    Block::default()
+        .title(title)
+        .borders(borders)
+        .border_style(Style::default().fg(border_color))
+        .padding(Padding::horizontal(1))
+}
 
 pub fn render(frame: &mut Frame, app: &App) {
     match &app.state {
@@ -40,12 +60,11 @@ fn render_ready(frame: &mut Frame, app: &App) {
 }
 
 fn render_loading(frame: &mut Frame, area: Rect, status: &str, _steps_received: usize) {
+    let dialog_area = centered_rect(LOADING_DIALOG_WIDTH, LOADING_DIALOG_HEIGHT, area);
     let block = Block::default()
         .title(" Generating Walkthrough ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
-
-    let _inner = block.inner(centered_rect(60, 30, area));
 
     let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let spinner_idx = (std::time::SystemTime::now()
@@ -75,7 +94,7 @@ fn render_loading(frame: &mut Frame, area: Rect, status: &str, _steps_received: 
         .block(block)
         .alignment(Alignment::Center);
 
-    frame.render_widget(paragraph, centered_rect(60, 30, area));
+    frame.render_widget(paragraph, dialog_area);
 }
 
 fn render_error(frame: &mut Frame, area: Rect, message: &str) {
@@ -103,7 +122,7 @@ fn render_error(frame: &mut Frame, area: Rect, message: &str) {
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true });
 
-    frame.render_widget(paragraph, centered_rect(70, 40, area));
+    frame.render_widget(paragraph, centered_rect(ERROR_DIALOG_WIDTH, ERROR_DIALOG_HEIGHT, area));
 }
 
 /// Helper to create a centered rect
@@ -128,11 +147,21 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 fn render_main(frame: &mut Frame, area: Rect, app: &App) {
+    // If a pane is zoomed, render only that pane fullscreen
+    if let Some(zoomed_pane) = app.layout.zoomed {
+        match zoomed_pane {
+            Pane::Minimap => minimap::render(frame, area, app),
+            Pane::Chat => explanation::render(frame, area, app),
+            Pane::Diff => diff_viewer::render(frame, area, app),
+        }
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(app.left_pane_percent),
-            Constraint::Percentage(100 - app.left_pane_percent),
+            Constraint::Percentage(app.layout.left_pane_percent),
+            Constraint::Percentage(100 - app.layout.left_pane_percent),
         ])
         .split(area);
 
@@ -144,8 +173,8 @@ fn render_left_pane(frame: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(app.minimap_percent),
-            Constraint::Percentage(100 - app.minimap_percent),
+            Constraint::Percentage(app.layout.minimap_percent),
+            Constraint::Percentage(100 - app.layout.minimap_percent),
         ])
         .split(area);
 
@@ -161,60 +190,75 @@ fn help(key: &str, action: &str) -> [Span<'static>; 2] {
 }
 
 fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let is_zoomed = app.layout.is_zoomed();
+
     let help_text = if app.quit_pending {
         Line::from(Span::styled(
             "Press Ctrl+C again to quit",
             Style::default().fg(Color::White),
         ))
     } else {
-        match app.active_pane {
-            ActivePane::Chat => {
-                if app.chat_scrollback_mode {
+        match app.layout.active_pane {
+            Pane::Chat => {
+                if app.chat_scroll.in_scrollback() {
                     // Scrollback mode (works in both vim and non-vim)
                     let mut spans = vec![Span::styled(
-                        "-- SCROLLBACK -- ",
-                        Style::default().fg(Color::DarkGray),
+                        if is_zoomed { "-- ZOOMED | SCROLLBACK -- " } else { "-- SCROLLBACK -- " },
+                        Style::default().fg(if is_zoomed { Color::Cyan } else { Color::DarkGray }),
                     )];
                     spans.extend(help("Ctrl+n/p", "scroll"));
+                    if is_zoomed {
+                        spans.extend(help("z", "unzoom"));
+                    }
                     spans.extend(help("Esc", "exit"));
                     Line::from(spans)
-                } else if app.vim_enabled && app.vim_mode == VimInputMode::Insert {
+                } else if app.editor.vim_enabled && app.editor.vim_mode == VimInputMode::Insert {
                     // Vim insert mode
                     Line::from(Span::styled(
-                        "-- INSERT --",
-                        Style::default().fg(Color::DarkGray),
+                        if is_zoomed { "-- ZOOMED | INSERT --" } else { "-- INSERT --" },
+                        Style::default().fg(if is_zoomed { Color::Cyan } else { Color::DarkGray }),
                     ))
-                } else if app.vim_enabled {
+                } else if app.editor.vim_enabled {
                     // Vim normal mode
                     let mut spans = vec![];
+                    if is_zoomed {
+                        spans.push(Span::styled("-- ZOOMED -- ", Style::default().fg(Color::Cyan)));
+                    }
                     spans.extend(help("Ctrl+n/p", "scroll"));
-                    spans.extend(help("Tab", "switch pane"));
+                    spans.extend(help("z", if is_zoomed { "unzoom" } else { "zoom" }));
                     spans.extend(help("Ctrl+C", "quit"));
                     Line::from(spans)
                 } else {
                     // Non-vim mode
                     let mut spans = vec![];
+                    if is_zoomed {
+                        spans.push(Span::styled("-- ZOOMED -- ", Style::default().fg(Color::Cyan)));
+                    }
                     spans.extend(help("Ctrl+n/p", "scroll"));
                     spans.extend(help("Tab", "switch pane"));
                     spans.extend(help("Ctrl+C", "quit"));
                     Line::from(spans)
                 }
             }
-            ActivePane::Minimap => {
+            Pane::Minimap => {
                 let mut spans = vec![];
+                if is_zoomed {
+                    spans.push(Span::styled("-- ZOOMED -- ", Style::default().fg(Color::Cyan)));
+                }
                 spans.extend(help("n/p", "switch step"));
                 spans.extend(help("Enter", "mark reviewed"));
-                spans.extend(help("x", "toggle reviewed"));
-                spans.extend(help("Tab", "switch pane"));
+                spans.extend(help("z", if is_zoomed { "unzoom" } else { "zoom" }));
                 spans.extend(help("Ctrl+C", "quit"));
                 Line::from(spans)
             }
-            ActivePane::Diff => {
+            Pane::Diff => {
                 let mut spans = vec![];
+                if is_zoomed {
+                    spans.push(Span::styled("-- ZOOMED -- ", Style::default().fg(Color::Cyan)));
+                }
                 spans.extend(help("j/k", "scroll"));
                 spans.extend(help("Ctrl+d/u", "half-page"));
-                spans.extend(help("Enter", "mark reviewed"));
-                spans.extend(help("x", "toggle reviewed"));
+                spans.extend(help("z", if is_zoomed { "unzoom" } else { "zoom" }));
                 spans.extend(help("Ctrl+C", "quit"));
                 Line::from(spans)
             }

@@ -1,31 +1,11 @@
-use std::cell::Cell;
-use tui_textarea::TextArea;
-
+use crate::editor::Editor;
+use crate::layout::{Divider, Layout, Pane};
 use crate::model::{Message, Walkthrough};
+use crate::scroll::{ChatScroll, DiffScroll};
 use crate::settings::Settings;
 
-/// Vim mode state for the text editor
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VimInputMode {
-    Normal,
-    Insert,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActivePane {
-    Minimap,
-    Chat,
-    Diff,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Divider {
-    Vertical,   // Between left pane and diff viewer
-    Horizontal, // Between minimap and chat
-}
-
 /// Application state machine
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum AppState {
     /// Generating walkthrough from diff
     Loading {
@@ -33,15 +13,10 @@ pub enum AppState {
         steps_received: usize,
     },
     /// Walkthrough is ready for viewing
+    #[default]
     Ready,
     /// An error occurred
     Error { message: String },
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self::Ready
-    }
 }
 
 pub struct App<'a> {
@@ -49,29 +24,17 @@ pub struct App<'a> {
     pub walkthrough: Walkthrough,
     pub current_step: usize,
     pub visited_steps: Vec<bool>,
-    pub diff_scroll: usize,
-    pub chat_scroll: usize,
+    pub walkthrough_complete: bool,
+    pub diff_scroll: DiffScroll,
+    pub chat_scroll: ChatScroll,
+    pub layout: Layout,
+    pub editor: Editor<'a>,
     pub should_quit: bool,
     pub quit_pending: bool,
-    pub active_pane: ActivePane,
-    pub walkthrough_complete: bool,
-    // Pane layout (percentages)
-    pub left_pane_percent: u16,
-    pub minimap_percent: u16,
-    // Drag state
-    pub dragging: Option<Divider>,
-    // Text editor
-    pub textarea: TextArea<'a>,
-    pub vim_enabled: bool,
-    pub vim_mode: VimInputMode,
     // Chat state - Some(step_index) when waiting for response
     pub chat_pending: Option<usize>,
     // Pending chat request to be processed by main loop (step_index, walkthrough, messages)
     pub chat_request: Option<(usize, Walkthrough, Vec<Message>)>,
-    // When true, user is in scrollback mode (manual scroll, no auto-follow)
-    pub chat_scrollback_mode: bool,
-    // Last known max scroll value (updated by render via Cell for interior mutability)
-    pub chat_max_scroll: Cell<usize>,
     // Set to true when user requests retry from error state
     pub retry_requested: bool,
     // Original diff input for retry
@@ -81,30 +44,20 @@ pub struct App<'a> {
 impl<'a> App<'a> {
     pub fn new(walkthrough: Walkthrough, settings: &Settings) -> Self {
         let step_count = walkthrough.step_count();
-        let mut textarea = TextArea::default();
-        textarea.set_cursor_line_style(ratatui::style::Style::default());
-
         Self {
             state: AppState::Ready,
             walkthrough,
             current_step: 0,
             visited_steps: vec![false; step_count],
-            diff_scroll: 0,
-            chat_scroll: 0,
+            walkthrough_complete: false,
+            diff_scroll: DiffScroll::new(),
+            chat_scroll: ChatScroll::new(),
+            layout: Layout::default(),
+            editor: Editor::new(settings.vim_enabled()),
             should_quit: false,
             quit_pending: false,
-            active_pane: ActivePane::Diff,
-            walkthrough_complete: false,
-            left_pane_percent: 50,
-            minimap_percent: 40,
-            dragging: None,
-            textarea,
-            vim_enabled: settings.vim_enabled(),
-            vim_mode: VimInputMode::Normal,
             chat_pending: None,
             chat_request: None,
-            chat_scrollback_mode: false,
-            chat_max_scroll: Cell::new(0),
             retry_requested: false,
             diff_input: None,
         }
@@ -112,9 +65,6 @@ impl<'a> App<'a> {
 
     /// Create an app in loading state (empty walkthrough)
     pub fn loading(settings: &Settings) -> Self {
-        let mut textarea = TextArea::default();
-        textarea.set_cursor_line_style(ratatui::style::Style::default());
-
         Self {
             state: AppState::Loading {
                 status: "Initializing...".to_string(),
@@ -123,22 +73,15 @@ impl<'a> App<'a> {
             walkthrough: Walkthrough { steps: vec![] },
             current_step: 0,
             visited_steps: vec![],
-            diff_scroll: 0,
-            chat_scroll: 0,
+            walkthrough_complete: false,
+            diff_scroll: DiffScroll::new(),
+            chat_scroll: ChatScroll::new(),
+            layout: Layout::default(),
+            editor: Editor::new(settings.vim_enabled()),
             should_quit: false,
             quit_pending: false,
-            active_pane: ActivePane::Diff,
-            walkthrough_complete: false,
-            left_pane_percent: 50,
-            minimap_percent: 40,
-            dragging: None,
-            textarea,
-            vim_enabled: settings.vim_enabled(),
-            vim_mode: VimInputMode::Normal,
             chat_pending: None,
             chat_request: None,
-            chat_scrollback_mode: false,
-            chat_max_scroll: Cell::new(0),
             retry_requested: false,
             diff_input: None,
         }
@@ -198,16 +141,16 @@ impl<'a> App<'a> {
     pub fn next_step(&mut self) {
         if self.current_step < self.walkthrough.step_count().saturating_sub(1) {
             self.current_step += 1;
-            self.diff_scroll = 0;
-            self.chat_scroll = 0;
+            self.diff_scroll.reset();
+            self.chat_scroll.reset();
         }
     }
 
     pub fn prev_step(&mut self) {
         if self.current_step > 0 {
             self.current_step -= 1;
-            self.diff_scroll = 0;
-            self.chat_scroll = 0;
+            self.diff_scroll.reset();
+            self.chat_scroll.reset();
         }
         self.walkthrough_complete = false;
     }
@@ -215,38 +158,42 @@ impl<'a> App<'a> {
     pub fn go_to_step(&mut self, index: usize) {
         if index < self.walkthrough.step_count() && index != self.current_step {
             self.current_step = index;
-            self.diff_scroll = 0;
-            self.chat_scroll = 0;
+            self.diff_scroll.reset();
+            self.chat_scroll.reset();
             self.walkthrough_complete = false;
         }
     }
 
     pub fn complete_step_and_advance(&mut self) {
-        // Mark current step as completed
-        if let Some(visited) = self.visited_steps.get_mut(self.current_step) {
-            *visited = true;
-        }
+        self.set_step_visited(self.current_step, true);
 
-        // If not on last step, advance
         if self.current_step < self.walkthrough.step_count().saturating_sub(1) {
             self.current_step += 1;
-            self.diff_scroll = 0;
-            self.chat_scroll = 0;
+            self.diff_scroll.reset();
+            self.chat_scroll.reset();
         } else {
-            // On last step - show completion message
             self.walkthrough_complete = true;
         }
     }
 
     pub fn toggle_step_reviewed(&mut self) {
-        if let Some(visited) = self.visited_steps.get_mut(self.current_step) {
-            *visited = !*visited;
-        }
+        let current = self.is_step_visited(self.current_step);
+        self.set_step_visited(self.current_step, !current);
         self.walkthrough_complete = false;
     }
 
     pub fn is_walkthrough_complete(&self) -> bool {
         self.walkthrough_complete && self.visited_steps.iter().all(|&v| v)
+    }
+
+    pub fn is_step_visited(&self, index: usize) -> bool {
+        self.visited_steps.get(index).copied().unwrap_or(false)
+    }
+
+    pub fn set_step_visited(&mut self, index: usize, visited: bool) {
+        if let Some(v) = self.visited_steps.get_mut(index) {
+            *v = visited;
+        }
     }
 
     /// Count diff lines in a step
@@ -265,43 +212,26 @@ impl<'a> App<'a> {
             .steps
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.visited_steps.get(*i).copied().unwrap_or(false))
+            .filter(|(i, _)| self.is_step_visited(*i))
             .map(|(_, step)| Self::step_diff_lines(step))
             .sum()
     }
 
-    pub fn scroll_down(&mut self, amount: usize, viewport_height: usize) {
-        let content_lines = self.diff_content_lines();
-        let max_scroll = content_lines.saturating_sub(viewport_height);
-        self.diff_scroll = self.diff_scroll.saturating_add(amount).min(max_scroll);
-    }
-
-    /// Calculate total lines of diff content for current step
-    fn diff_content_lines(&self) -> usize {
-        if let Some(step) = self.current_step_data() {
-            let mut count = 0;
-            for hunk in &step.hunks {
-                count += 2; // header + blank line
-                count += hunk.content.lines().count();
-                count += 1; // trailing blank
-            }
-            count
-        } else {
-            1
-        }
+    pub fn scroll_down(&mut self, amount: usize) {
+        self.diff_scroll.add(amount);
     }
 
     pub fn scroll_up(&mut self, amount: usize) {
-        self.diff_scroll = self.diff_scroll.saturating_sub(amount);
+        self.diff_scroll.sub(amount);
     }
 
     pub fn scroll_to_top(&mut self) {
-        self.diff_scroll = 0;
+        self.diff_scroll.reset();
     }
 
     pub fn scroll_to_bottom(&mut self, content_height: usize, viewport_height: usize) {
         if content_height > viewport_height {
-            self.diff_scroll = content_height - viewport_height;
+            self.diff_scroll.set(content_height - viewport_height);
         }
     }
 
@@ -314,17 +244,17 @@ impl<'a> App<'a> {
         self.walkthrough.steps.get_mut(self.current_step)
     }
 
-    pub fn set_active_pane(&mut self, pane: ActivePane) {
+    pub fn set_active_pane(&mut self, pane: Pane) {
         // If leaving chat, reset to vim normal mode
-        if self.active_pane == ActivePane::Chat && pane != ActivePane::Chat {
-            self.vim_mode = VimInputMode::Normal;
+        if self.layout.active_pane == Pane::Chat && pane != Pane::Chat {
+            self.editor.reset_mode();
         }
-        self.active_pane = pane;
+        self.layout.active_pane = pane;
     }
 
     /// Sends the current message and queues a chat request for the main loop.
     pub fn send_message(&mut self) {
-        let content: String = self.textarea.lines().join("\n");
+        let content: String = self.editor.textarea.lines().join("\n");
         if content.trim().is_empty() {
             return;
         }
@@ -335,8 +265,8 @@ impl<'a> App<'a> {
         }
 
         // Clear the textarea
-        self.textarea.select_all();
-        self.textarea.delete_char();
+        self.editor.textarea.select_all();
+        self.editor.textarea.delete_char();
 
         let step_index = self.current_step;
         if let Some(step) = self.walkthrough.steps.get_mut(step_index) {
@@ -391,31 +321,19 @@ impl<'a> App<'a> {
     }
 
     pub fn textarea_is_empty(&self) -> bool {
-        self.textarea.lines().iter().all(|l| l.is_empty())
+        self.editor.is_empty()
     }
 
-    /// Scroll up (towards older content). chat_scroll = lines from bottom.
     pub fn scroll_chat_up(&mut self, amount: usize) {
-        let max = self.chat_max_scroll.get();
-        if max == 0 {
-            return; // Nothing to scroll
-        }
-        self.chat_scrollback_mode = true;
-        self.chat_scroll = self.chat_scroll.saturating_add(amount).min(max);
+        self.chat_scroll.scroll_up(amount);
     }
 
-    /// Scroll down (towards newer content).
     pub fn scroll_chat_down(&mut self, amount: usize) {
-        self.chat_scroll = self.chat_scroll.saturating_sub(amount);
-        // If we've scrolled back to bottom, exit scrollback mode
-        if self.chat_scroll == 0 {
-            self.chat_scrollback_mode = false;
-        }
+        self.chat_scroll.scroll_down(amount);
     }
 
     pub fn exit_chat_scrollback(&mut self) {
-        self.chat_scrollback_mode = false;
-        self.chat_scroll = 0; // Back to bottom
+        self.chat_scroll.jump_to_bottom();
     }
 
     pub fn quit(&mut self) {
@@ -423,20 +341,18 @@ impl<'a> App<'a> {
     }
 
     pub fn set_left_pane_percent(&mut self, percent: u16) {
-        // Clamp to reasonable bounds (20-80%)
-        self.left_pane_percent = percent.clamp(20, 80);
+        self.layout.set_left_pane_percent(percent);
     }
 
     pub fn set_minimap_percent(&mut self, percent: u16) {
-        // Clamp to reasonable bounds (15-85%)
-        self.minimap_percent = percent.clamp(15, 85);
+        self.layout.set_minimap_percent(percent);
     }
 
     pub fn start_drag(&mut self, divider: Divider) {
-        self.dragging = Some(divider);
+        self.layout.start_drag(divider);
     }
 
     pub fn stop_drag(&mut self) {
-        self.dragging = None;
+        self.layout.stop_drag();
     }
 }

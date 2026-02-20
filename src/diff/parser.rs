@@ -50,8 +50,8 @@ impl ParsedDiff {
             let file_path = patched_file.target_file.trim_start_matches("b/").to_string();
 
             for hunk in patched_file {
-                let start_line = hunk.target_start as usize;
-                let length = hunk.target_length as usize;
+                let start_line = hunk.target_start;
+                let length = hunk.target_length;
                 let end_line = if length > 0 {
                     start_line + length - 1
                 } else {

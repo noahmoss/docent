@@ -51,21 +51,21 @@ impl Settings {
 fn detect_vim_from_inputrc() -> bool {
     let inputrc_path = dirs::home_dir().map(|h| h.join(".inputrc"));
 
-    if let Some(path) = inputrc_path {
-        if let Ok(contents) = fs::read_to_string(path) {
-            for line in contents.lines() {
-                let line = line.trim();
-                // Skip comments
-                if line.starts_with('#') {
-                    continue;
-                }
-                // Check for "set editing-mode vi" (case-insensitive, flexible whitespace)
-                if line.to_lowercase().contains("set")
-                    && line.to_lowercase().contains("editing-mode")
-                    && line.to_lowercase().contains("vi")
-                {
-                    return true;
-                }
+    if let Some(path) = inputrc_path
+        && let Ok(contents) = fs::read_to_string(path)
+    {
+        for line in contents.lines() {
+            let line = line.trim();
+            // Skip comments
+            if line.starts_with('#') {
+                continue;
+            }
+            // Check for "set editing-mode vi" (case-insensitive, flexible whitespace)
+            if line.to_lowercase().contains("set")
+                && line.to_lowercase().contains("editing-mode")
+                && line.to_lowercase().contains("vi")
+            {
+                return true;
             }
         }
     }
