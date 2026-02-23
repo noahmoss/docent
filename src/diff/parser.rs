@@ -1,12 +1,16 @@
 use thiserror::Error;
 use unidiff::PatchSet;
 
+use super::filter::{FileFilter, FilterError};
+
 #[derive(Debug, Error)]
 pub enum DiffParseError {
     #[error("empty diff")]
     EmptyDiff,
     #[error("failed to parse diff: {0}")]
     ParseError(String),
+    #[error("filter error: {0}")]
+    Filter(#[from] FilterError),
 }
 
 /// A single hunk from a unified diff, with an assigned index for Claude reference.
@@ -94,6 +98,29 @@ impl ParsedDiff {
             .collect::<Vec<_>>()
             .join("\n\n")
     }
+
+    /// Filter hunks using a compiled FileFilter.
+    ///
+    /// Hunks whose file paths don't pass the filter are removed.
+    /// Remaining hunks are re-indexed to maintain 1-based sequential indices.
+    pub fn apply_filter(&mut self, filter: &FileFilter) -> Result<(), DiffParseError> {
+        if filter.is_empty() {
+            return Ok(());
+        }
+
+        self.hunks.retain(|hunk| filter.matches(&hunk.file_path));
+
+        // Re-index hunks to maintain 1-based sequential indices
+        for (i, hunk) in self.hunks.iter_mut().enumerate() {
+            hunk.index = i + 1;
+        }
+
+        if self.hunks.is_empty() {
+            return Err(FilterError::NoMatches.into());
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -161,5 +188,83 @@ diff --git a/src/b.rs b/src/b.rs
         let parsed = ParsedDiff::parse(diff).unwrap();
         let prompt = parsed.format_for_prompt();
         assert!(prompt.contains("=== Hunk 1 (src/main.rs"));
+    }
+
+    #[test]
+    fn test_filter_by_include_pattern() {
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,2 +1,3 @@
++// Rust file
+ fn main() {}
+diff --git a/src/core.clj b/src/core.clj
+--- a/src/core.clj
++++ b/src/core.clj
+@@ -1,2 +1,3 @@
++;; Clojure file
+ (defn main [])
+diff --git a/test/test.clj b/test/test.clj
+--- a/test/test.clj
++++ b/test/test.clj
+@@ -1,2 +1,3 @@
++;; Test file
+ (deftest my-test)
+"#;
+        let mut parsed = ParsedDiff::parse(diff).unwrap();
+        assert_eq!(parsed.hunks.len(), 3);
+
+        // Filter to only Clojure files
+        let filter = FileFilter::new(&["*.clj".to_string()], &[]).unwrap();
+        parsed.apply_filter(&filter).unwrap();
+        assert_eq!(parsed.hunks.len(), 2);
+        assert_eq!(parsed.hunks[0].file_path, "src/core.clj");
+        assert_eq!(parsed.hunks[1].file_path, "test/test.clj");
+
+        // Indices should be re-numbered
+        assert_eq!(parsed.hunks[0].index, 1);
+        assert_eq!(parsed.hunks[1].index, 2);
+    }
+
+    #[test]
+    fn test_filter_by_exclude_pattern() {
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,2 +1,3 @@
++// Rust file
+ fn main() {}
+diff --git a/test/test.rs b/test/test.rs
+--- a/test/test.rs
++++ b/test/test.rs
+@@ -1,2 +1,3 @@
++// Test file
+ fn test() {}
+"#;
+        let mut parsed = ParsedDiff::parse(diff).unwrap();
+        assert_eq!(parsed.hunks.len(), 2);
+
+        // Exclude test directory
+        let filter = FileFilter::new(&[], &["test/*".to_string()]).unwrap();
+        parsed.apply_filter(&filter).unwrap();
+        assert_eq!(parsed.hunks.len(), 1);
+        assert_eq!(parsed.hunks[0].file_path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_filter_no_matches_error() {
+        let diff = r#"diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,2 +1,3 @@
++// Rust file
+ fn main() {}
+"#;
+        let mut parsed = ParsedDiff::parse(diff).unwrap();
+
+        // Filter for non-existent file type
+        let filter = FileFilter::new(&["*.py".to_string()], &[]).unwrap();
+        let result = parsed.apply_filter(&filter);
+        assert!(matches!(result, Err(DiffParseError::Filter(FilterError::NoMatches))));
     }
 }

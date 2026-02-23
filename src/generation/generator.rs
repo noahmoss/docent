@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::api::{ApiError, ClaudeClient, CreateWalkthroughResponse, WalkthroughStepResponse};
-use crate::diff::{DiffParseError, ParsedDiff};
+use crate::diff::{DiffParseError, FileFilter, ParsedDiff};
 use crate::model::{Hunk, Message, Priority, Step, Walkthrough};
 
 #[derive(Debug, Error)]
@@ -22,8 +22,15 @@ pub struct WalkthroughGenerator {
 }
 
 impl WalkthroughGenerator {
+    #[allow(dead_code)]
     pub fn new(diff_text: &str) -> Result<Self, GenerationError> {
-        let parsed_diff = ParsedDiff::parse(diff_text)?;
+        Self::with_filter(diff_text, &FileFilter::default())
+    }
+
+    pub fn with_filter(diff_text: &str, filter: &FileFilter) -> Result<Self, GenerationError> {
+        let mut parsed_diff = ParsedDiff::parse(diff_text)?;
+        parsed_diff.apply_filter(filter)?;
+
         let client = ClaudeClient::from_env()?;
         Ok(Self {
             parsed_diff,

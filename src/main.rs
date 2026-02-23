@@ -14,6 +14,7 @@ mod ui;
 
 use std::io::{self, stdout, IsTerminal, Read};
 
+use clap::Parser;
 use crossterm::{
     ExecutableCommand,
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
@@ -25,6 +26,7 @@ use tokio::sync::mpsc;
 use api::ClaudeClient;
 use app::App;
 use constants::{EVENT_POLL_INTERVAL, EVENT_RECV_TIMEOUT, VIEWPORT_HEIGHT_OFFSET};
+use diff::FileFilter;
 use generation::WalkthroughGenerator;
 use input::InputHandler;
 use model::{Message, Walkthrough, mock_walkthrough};
@@ -47,9 +49,13 @@ enum AppEvent {
 }
 
 /// Spawns a task to generate a walkthrough from diff text
-fn spawn_walkthrough_generation(tx: mpsc::Sender<AppEvent>, diff_text: String) {
+fn spawn_walkthrough_generation(
+    tx: mpsc::Sender<AppEvent>,
+    diff_text: String,
+    filter: FileFilter,
+) {
     tokio::spawn(async move {
-        match WalkthroughGenerator::new(&diff_text) {
+        match WalkthroughGenerator::with_filter(&diff_text, &filter) {
             Ok(generator) => match generator.generate().await {
                 Ok(walkthrough) => {
                     let _ = tx.send(AppEvent::GenerationComplete(walkthrough)).await;
@@ -133,18 +139,25 @@ fn spawn_chat_handler(
     });
 }
 
-#[derive(Debug)]
+/// AI-guided code review walkthrough tool
+#[derive(Parser, Debug)]
+#[command(name = "docent", version, about)]
 struct Args {
+    /// Path to a diff/patch file (or pipe diff via stdin)
+    #[arg(value_name = "FILE")]
     diff_file: Option<String>,
-    use_mock: bool,
-}
 
-fn parse_args() -> Args {
-    let args: Vec<String> = std::env::args().collect();
-    Args {
-        diff_file: args.get(1).filter(|s| !s.starts_with('-')).cloned(),
-        use_mock: args.iter().any(|a| a == "--mock"),
-    }
+    /// Use mock data instead of generating from a diff
+    #[arg(long = "mock")]
+    use_mock: bool,
+
+    /// Only include files matching these glob patterns (e.g., "*.clj", "src/**/*.rs")
+    #[arg(short = 'f', long = "filter", value_name = "PATTERN")]
+    filters: Vec<String>,
+
+    /// Exclude files matching these glob patterns
+    #[arg(short = 'x', long = "exclude", value_name = "PATTERN")]
+    excludes: Vec<String>,
 }
 
 fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
@@ -174,8 +187,13 @@ fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let args = parse_args();
+    let args = Args::parse();
     let diff_input = read_diff_input(&args)?;
+
+    // Build and validate the file filter early
+    let filter = FileFilter::new(&args.filters, &args.excludes).map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidInput, e.to_string())
+    })?;
 
     // Setup terminal
     enable_raw_mode()?;
@@ -184,7 +202,7 @@ async fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
     // Run app
-    let result = run_app(&mut terminal, diff_input).await;
+    let result = run_app(&mut terminal, diff_input, filter).await;
 
     // Restore terminal
     stdout().execute(DisableMouseCapture)?;
@@ -197,6 +215,7 @@ async fn main() -> io::Result<()> {
 async fn run_app<B: Backend + Send>(
     terminal: &mut Terminal<B>,
     diff_input: Option<String>,
+    filter: FileFilter,
 ) -> io::Result<()> {
     let settings = Settings::load();
 
@@ -205,6 +224,7 @@ async fn run_app<B: Backend + Send>(
     } else {
         let mut app = App::loading(&settings);
         app.diff_input = diff_input.clone();
+        app.diff_filter = filter.clone();
         app
     };
 
@@ -213,7 +233,7 @@ async fn run_app<B: Backend + Send>(
 
     if let Some(diff_text) = diff_input {
         app.set_loading_status("Generating walkthrough...".to_string());
-        spawn_walkthrough_generation(tx.clone(), diff_text);
+        spawn_walkthrough_generation(tx.clone(), diff_text, filter);
     }
 
     spawn_terminal_reader(tx.clone());
@@ -241,7 +261,7 @@ async fn run_app<B: Backend + Send>(
             app.retry_requested = false;
             if let Some(diff_text) = app.diff_input.clone() {
                 app.set_loading_status("Generating walkthrough...".to_string());
-                spawn_walkthrough_generation(tx.clone(), diff_text);
+                spawn_walkthrough_generation(tx.clone(), diff_text, app.diff_filter.clone());
             }
         }
     }

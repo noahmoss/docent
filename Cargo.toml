@@ -17,3 +17,5 @@ reqwest = { version = "0.12", features = ["stream", "json"] }
 futures = "0.3"
 thiserror = "1"
 unidiff = "0.4"
+globset = "0.4"
+clap = { version = "4", features = ["derive"] }

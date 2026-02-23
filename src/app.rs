@@ -1,3 +1,4 @@
+use crate::diff::FileFilter;
 use crate::editor::Editor;
 use crate::layout::{Divider, Layout, Pane};
 use crate::model::{Message, Walkthrough};
@@ -39,6 +40,8 @@ pub struct App<'a> {
     pub retry_requested: bool,
     // Original diff input for retry
     pub diff_input: Option<String>,
+    // File filter for retry
+    pub diff_filter: FileFilter,
 }
 
 impl<'a> App<'a> {
@@ -60,6 +63,7 @@ impl<'a> App<'a> {
             chat_request: None,
             retry_requested: false,
             diff_input: None,
+            diff_filter: FileFilter::default(),
         }
     }
 
@@ -84,6 +88,7 @@ impl<'a> App<'a> {
             chat_request: None,
             retry_requested: false,
             diff_input: None,
+            diff_filter: FileFilter::default(),
         }
     }
 
