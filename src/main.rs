@@ -9,6 +9,7 @@ mod input;
 mod layout;
 mod model;
 mod scroll;
+mod search;
 mod settings;
 mod ui;
 

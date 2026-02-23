@@ -16,6 +16,7 @@
 
 - [ ] vim-tmux-navigator style integration for Ctrl+h/j/k/l pane navigation
 - [ ] syntect integration for proper syntax highlighting in diff viewer
+- [ ] tree-sitter integration for finer-grained diff units (split hunks at function/class boundaries rather than relying on git's line-based hunks)
 
 ## Pain Points
 

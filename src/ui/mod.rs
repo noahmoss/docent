@@ -256,8 +256,21 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
                 if is_zoomed {
                     spans.push(Span::styled("-- ZOOMED -- ", Style::default().fg(Color::Cyan)));
                 }
+
+                // Show search status if there's an active search
+                if app.search.query.is_some() {
+                    let match_display = app.search.match_count_display();
+                    spans.push(Span::styled(
+                        format!("[{match_display}] "),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                    spans.extend(help("n/p", "next/prev"));
+                    spans.extend(help("Esc", "clear"));
+                } else {
+                    spans.extend(help("/", "search"));
+                }
+
                 spans.extend(help("j/k", "scroll"));
-                spans.extend(help("Ctrl+d/u", "half-page"));
                 spans.extend(help("z", if is_zoomed { "unzoom" } else { "zoom" }));
                 spans.extend(help("Ctrl+C", "quit"));
                 Line::from(spans)

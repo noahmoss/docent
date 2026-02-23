@@ -58,6 +58,12 @@ impl InputHandler {
             return;
         }
 
+        // Handle search input mode
+        if app.search.active {
+            self.handle_search_input(key, app);
+            return;
+        }
+
         // When Chat pane is active, route to editor handling
         if app.layout.active_pane == Pane::Chat {
             self.handle_chat_input(key, app);
@@ -66,6 +72,27 @@ impl InputHandler {
 
         // Otherwise handle app-level navigation
         self.handle_normal_mode(key, app, viewport_height);
+    }
+
+    fn handle_search_input(&mut self, key: KeyEvent, app: &mut App) {
+        match key.code {
+            KeyCode::Esc => {
+                app.search.cancel();
+            }
+            KeyCode::Enter => {
+                // Finalize search and exit input mode
+                app.execute_search();
+            }
+            KeyCode::Backspace => {
+                app.search.pop_char();
+                app.execute_search_incremental();
+            }
+            KeyCode::Char(c) => {
+                app.search.push_char(c);
+                app.execute_search_incremental();
+            }
+            _ => {}
+        }
     }
 
     fn handle_chat_input(&mut self, key: KeyEvent, app: &mut App) {
@@ -335,9 +362,26 @@ impl InputHandler {
                 app.scroll_to_bottom(content_height, viewport_height);
             }
 
-            // Step navigation
-            KeyCode::Char('n') => app.next_step(),
-            KeyCode::Char('p') => app.prev_step(),
+            // Step navigation (n/p when not searching, otherwise search nav)
+            KeyCode::Char('n') => {
+                if app.search.query.is_some() {
+                    app.next_search_match();
+                } else {
+                    app.next_step();
+                }
+            }
+            KeyCode::Char('N') => {
+                if app.search.query.is_some() {
+                    app.prev_search_match();
+                }
+            }
+            KeyCode::Char('p') => {
+                if app.search.query.is_some() {
+                    app.prev_search_match();
+                } else {
+                    app.prev_step();
+                }
+            }
 
             // Complete step and advance (or finish walkthrough)
             KeyCode::Enter => app.complete_step_and_advance(),
@@ -347,6 +391,10 @@ impl InputHandler {
 
             // Toggle zoom mode
             KeyCode::Char('z') => app.layout.toggle_zoom(),
+
+            // Search
+            KeyCode::Char('/') => app.start_search(),
+            KeyCode::Esc => app.clear_search(),
 
             _ => {}
         }
@@ -389,15 +437,16 @@ impl InputHandler {
             MouseEventKind::Drag(_) => {
                 if let Some(divider) = app.layout.dragging {
                     match divider {
-                        Divider::Vertical => {
+                        Divider::Vertical if size.width > 0 => {
                             let new_percent = (mouse.column as u32 * 100 / size.width as u32) as u16;
                             app.set_left_pane_percent(new_percent);
                         }
-                        Divider::Horizontal => {
+                        Divider::Horizontal if content_height > 0 => {
                             let new_percent =
                                 (mouse.row as u32 * 100 / content_height as u32) as u16;
                             app.set_minimap_percent(new_percent);
                         }
+                        _ => {}
                     }
                 }
             }

@@ -27,3 +27,8 @@ pub const INPUT_CURSOR_BG: Color = Color::White;
 pub const STEP_CURRENT: Color = Color::White;
 pub const STEP_COMPLETED: Color = Color::Green;
 pub const STEP_PENDING: Color = Color::DarkGray;
+
+// Search
+pub const SEARCH_MATCH: Color = Color::Rgb(100, 100, 50);
+pub const SEARCH_MATCH_CURRENT: Color = Color::Yellow;
+pub const SEARCH_MATCH_TEXT: Color = Color::Black;

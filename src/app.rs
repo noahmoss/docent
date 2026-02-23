@@ -3,6 +3,7 @@ use crate::editor::Editor;
 use crate::layout::{Divider, Layout, Pane};
 use crate::model::{Message, Walkthrough};
 use crate::scroll::{ChatScroll, DiffScroll};
+use crate::search::SearchState;
 use crate::settings::Settings;
 
 /// Application state machine
@@ -42,6 +43,8 @@ pub struct App<'a> {
     pub diff_input: Option<String>,
     // File filter for retry
     pub diff_filter: FileFilter,
+    // Search state for diff viewer
+    pub search: SearchState,
 }
 
 impl<'a> App<'a> {
@@ -64,6 +67,7 @@ impl<'a> App<'a> {
             retry_requested: false,
             diff_input: None,
             diff_filter: FileFilter::default(),
+            search: SearchState::new(),
         }
     }
 
@@ -89,6 +93,7 @@ impl<'a> App<'a> {
             retry_requested: false,
             diff_input: None,
             diff_filter: FileFilter::default(),
+            search: SearchState::new(),
         }
     }
 
@@ -359,5 +364,74 @@ impl<'a> App<'a> {
 
     pub fn stop_drag(&mut self) {
         self.layout.stop_drag();
+    }
+
+    // Search functionality
+
+    /// Get the diff content as lines for searching
+    pub fn diff_lines(&self) -> Vec<String> {
+        let Some(step) = self.current_step_data() else {
+            return Vec::new();
+        };
+
+        let mut lines = Vec::new();
+        for hunk in &step.hunks {
+            // File header
+            lines.push(format!("─── {} ───", hunk.file_path));
+            lines.push(String::new());
+
+            // Diff content
+            for line in hunk.content.lines() {
+                lines.push(line.to_string());
+            }
+            lines.push(String::new());
+        }
+        lines
+    }
+
+    /// Start search input mode
+    pub fn start_search(&mut self) {
+        self.search.start();
+    }
+
+    /// Execute the current search (finalizes query and exits input mode)
+    pub fn execute_search(&mut self) {
+        let lines = self.diff_lines();
+        self.search.execute(&lines);
+        self.scroll_to_current_match();
+    }
+
+    /// Execute incremental search while typing (doesn't exit input mode)
+    pub fn execute_search_incremental(&mut self) {
+        let lines = self.diff_lines();
+        self.search.execute_incremental(&lines);
+        self.scroll_to_current_match();
+    }
+
+    /// Go to next search match
+    pub fn next_search_match(&mut self) {
+        self.search.next_match();
+        self.scroll_to_current_match();
+    }
+
+    /// Go to previous search match
+    pub fn prev_search_match(&mut self) {
+        self.search.prev_match();
+        self.scroll_to_current_match();
+    }
+
+    /// Scroll the diff view to show the current match
+    fn scroll_to_current_match(&mut self) {
+        if let Some(m) = self.search.current_match() {
+            // Set scroll position to show the match line near the top
+            // with a few lines of context above
+            let target = m.line.saturating_sub(3);
+            self.diff_scroll.set(target);
+        }
+    }
+
+    /// Clear search state
+    pub fn clear_search(&mut self) {
+        self.search.clear();
     }
 }
