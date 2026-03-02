@@ -180,6 +180,11 @@ async fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
                 .map_err(io::Error::other)?;
             return Ok(Some(diff));
         }
+        if input.starts_with("https://") || input.starts_with("http://") {
+            return Err(io::Error::other(format!(
+                "Unsupported URL: {input}\nExpected a GitHub PR URL like https://github.com/owner/repo/pull/123"
+            )));
+        }
         return Ok(Some(std::fs::read_to_string(input)?));
     }
 

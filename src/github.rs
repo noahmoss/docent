@@ -32,14 +32,25 @@ pub async fn fetch_diff(url: &str) -> Result<String, String> {
     let (owner, repo, number) =
         parse_pr_url(url).ok_or_else(|| format!("Not a valid GitHub PR URL: {url}"))?;
 
-    let diff_url = format!("https://github.com/{owner}/{repo}/pull/{number}.diff");
+    let api_url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}");
 
-    eprintln!("Fetching diff from {diff_url}...");
+    eprintln!("Fetching diff for {owner}/{repo}#{number}...");
 
-    let client = reqwest::Client::new();
-    let response = client
-        .get(&diff_url)
-        .header("Accept", "text/plain")
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+    let mut request = client
+        .get(&api_url)
+        .header("Accept", "application/vnd.github.v3.diff")
+        .header("User-Agent", "docent");
+
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        request = request.header("Authorization", format!("Bearer {token}"));
+    }
+
+    let response = request
         .send()
         .await
         .map_err(|e| format!("Failed to fetch diff: {e}"))?;
