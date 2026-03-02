@@ -31,7 +31,7 @@ use constants::{EVENT_POLL_INTERVAL, EVENT_RECV_TIMEOUT, VIEWPORT_HEIGHT_OFFSET}
 use diff::FileFilter;
 use generation::WalkthroughGenerator;
 use input::InputHandler;
-use model::{Message, Walkthrough, mock_walkthrough};
+use model::{Message, ReviewMode, Walkthrough, mock_walkthrough};
 use settings::Settings;
 
 /// Events that can occur in the app
@@ -55,9 +55,10 @@ fn spawn_walkthrough_generation(
     tx: mpsc::Sender<AppEvent>,
     diff_text: String,
     filter: FileFilter,
+    mode: ReviewMode,
 ) {
     tokio::spawn(async move {
-        match WalkthroughGenerator::with_filter(&diff_text, &filter) {
+        match WalkthroughGenerator::with_filter(&diff_text, &filter, mode) {
             Ok(generator) => match generator.generate().await {
                 Ok(walkthrough) => {
                     let _ = tx.send(AppEvent::GenerationComplete(walkthrough)).await;
@@ -98,6 +99,7 @@ fn spawn_chat_handler(
     step_index: usize,
     walkthrough: Walkthrough,
     messages: Vec<Message>,
+    mode: ReviewMode,
 ) {
     tokio::spawn(async move {
         match ClaudeClient::from_env() {
@@ -118,7 +120,7 @@ fn spawn_chat_handler(
                 });
 
                 match client
-                    .chat_streaming(&walkthrough, step_index, &messages, chunk_tx)
+                    .chat_streaming(&walkthrough, step_index, &messages, mode, chunk_tx)
                     .await
                 {
                     Ok(()) => {
@@ -160,6 +162,10 @@ struct Args {
     /// Exclude files matching these glob patterns
     #[arg(short = 'x', long = "exclude", value_name = "PATTERN")]
     excludes: Vec<String>,
+
+    /// Walkthrough mode: describe the changes instead of giving an opinionated review
+    #[arg(short = 'w', long = "walkthrough")]
+    walkthrough: bool,
 }
 
 async fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
@@ -208,8 +214,14 @@ async fn main() -> io::Result<()> {
     stdout().execute(EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
+    let mode = if args.walkthrough {
+        ReviewMode::Walkthrough
+    } else {
+        ReviewMode::default()
+    };
+
     // Run app
-    let result = run_app(&mut terminal, diff_input, filter).await;
+    let result = run_app(&mut terminal, diff_input, filter, mode).await;
 
     // Restore terminal
     stdout().execute(DisableMouseCapture)?;
@@ -223,25 +235,21 @@ async fn run_app<B: Backend + Send>(
     terminal: &mut Terminal<B>,
     diff_input: Option<String>,
     filter: FileFilter,
+    mode: ReviewMode,
 ) -> io::Result<()> {
-    let settings = Settings::load();
+    let mut settings = Settings::load();
 
     let mut app = if diff_input.is_none() {
-        App::new(mock_walkthrough(), &settings)
+        App::new(mock_walkthrough(), &settings, mode)
     } else {
-        let mut app = App::loading(&settings);
-        app.diff_input = diff_input.clone();
-        app.diff_filter = filter.clone();
+        let mut app = App::setup(&settings, mode);
+        app.diff_input = diff_input;
+        app.diff_filter = filter;
         app
     };
 
     let mut input_handler = InputHandler::new();
     let (tx, mut rx) = mpsc::channel::<AppEvent>(32);
-
-    if let Some(diff_text) = diff_input {
-        app.set_loading_status("Generating walkthrough...".to_string());
-        spawn_walkthrough_generation(tx.clone(), diff_text, filter);
-    }
 
     spawn_terminal_reader(tx.clone());
 
@@ -257,18 +265,51 @@ async fn run_app<B: Backend + Send>(
         }
 
         if let Some((step_index, walkthrough, messages)) = app.chat_request.take() {
-            spawn_chat_handler(tx.clone(), step_index, walkthrough, messages);
+            spawn_chat_handler(tx.clone(), step_index, walkthrough, messages, app.review_mode);
         }
 
         if app.should_quit {
             break;
         }
 
+        if app.generation_requested {
+            app.generation_requested = false;
+            // If the user entered a new key, propagate it
+            if app.api_key_source == settings::ApiKeySource::UserEntry {
+                // Safety: process-scoped, no other threads reading this var
+                unsafe { std::env::set_var("ANTHROPIC_API_KEY", &app.api_key_input) };
+                settings.api_key = Some(app.api_key_input.clone());
+                let _ = settings.save();
+            }
+            if let Some(diff_text) = app.diff_input.clone() {
+                let status = match app.review_mode {
+                    ReviewMode::Walkthrough => "Generating walkthrough...",
+                    ReviewMode::Review => "Generating review...",
+                };
+                app.set_loading_status(status.to_string());
+                spawn_walkthrough_generation(
+                    tx.clone(),
+                    diff_text,
+                    app.diff_filter.clone(),
+                    app.review_mode,
+                );
+            }
+        }
+
         if app.retry_requested {
             app.retry_requested = false;
             if let Some(diff_text) = app.diff_input.clone() {
-                app.set_loading_status("Generating walkthrough...".to_string());
-                spawn_walkthrough_generation(tx.clone(), diff_text, app.diff_filter.clone());
+                let status = match app.review_mode {
+                    ReviewMode::Walkthrough => "Generating walkthrough...",
+                    ReviewMode::Review => "Generating review...",
+                };
+                app.set_loading_status(status.to_string());
+                spawn_walkthrough_generation(
+                    tx.clone(),
+                    diff_text,
+                    app.diff_filter.clone(),
+                    app.review_mode,
+                );
             }
         }
     }

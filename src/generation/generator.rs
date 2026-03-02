@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::api::{ApiError, ClaudeClient, CreateWalkthroughResponse, WalkthroughStepResponse};
 use crate::diff::{DiffParseError, FileFilter, ParsedDiff};
-use crate::model::{Hunk, Message, Priority, Step, Walkthrough};
+use crate::model::{Hunk, Message, Priority, ReviewMode, Step, Walkthrough};
 
 #[derive(Debug, Error)]
 pub enum GenerationError {
@@ -19,15 +19,20 @@ pub enum GenerationError {
 pub struct WalkthroughGenerator {
     parsed_diff: ParsedDiff,
     client: ClaudeClient,
+    mode: ReviewMode,
 }
 
 impl WalkthroughGenerator {
     #[allow(dead_code)]
     pub fn new(diff_text: &str) -> Result<Self, GenerationError> {
-        Self::with_filter(diff_text, &FileFilter::default())
+        Self::with_filter(diff_text, &FileFilter::default(), ReviewMode::default())
     }
 
-    pub fn with_filter(diff_text: &str, filter: &FileFilter) -> Result<Self, GenerationError> {
+    pub fn with_filter(
+        diff_text: &str,
+        filter: &FileFilter,
+        mode: ReviewMode,
+    ) -> Result<Self, GenerationError> {
         let mut parsed_diff = ParsedDiff::parse(diff_text)?;
         parsed_diff.apply_filter(filter)?;
 
@@ -35,13 +40,13 @@ impl WalkthroughGenerator {
         Ok(Self {
             parsed_diff,
             client,
+            mode,
         })
     }
 
-    /// Generate a walkthrough from the diff.
     pub async fn generate(&self) -> Result<Walkthrough, GenerationError> {
         let prompt = self.build_prompt();
-        let response = self.client.generate_walkthrough(&prompt).await?;
+        let response = self.client.generate_walkthrough(&prompt, self.mode).await?;
         self.correlate_response(response)
     }
 

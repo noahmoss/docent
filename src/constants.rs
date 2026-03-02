@@ -26,3 +26,5 @@ pub const LOADING_DIALOG_WIDTH: u16 = 60;
 pub const LOADING_DIALOG_HEIGHT: u16 = 30;
 pub const ERROR_DIALOG_WIDTH: u16 = 70;
 pub const ERROR_DIALOG_HEIGHT: u16 = 40;
+pub const SETUP_DIALOG_WIDTH: u16 = 55;
+pub const SETUP_DIALOG_HEIGHT: u16 = 50;

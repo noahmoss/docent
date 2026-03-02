@@ -1,14 +1,16 @@
 use crate::diff::FileFilter;
 use crate::editor::Editor;
 use crate::layout::{Divider, Layout, Pane};
-use crate::model::{Message, Walkthrough};
+use crate::model::{Message, ReviewMode, Walkthrough};
 use crate::scroll::{ChatScroll, DiffScroll};
 use crate::search::SearchState;
-use crate::settings::Settings;
+use crate::settings::{ApiKeySource, Settings};
 
 /// Application state machine
 #[derive(Debug, Clone, Default)]
 pub enum AppState {
+    /// Start screen for mode selection and API key entry
+    Setup,
     /// Generating walkthrough from diff
     Loading {
         status: String,
@@ -19,6 +21,12 @@ pub enum AppState {
     Ready,
     /// An error occurred
     Error { message: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupFocus {
+    Mode,
+    ApiKey,
 }
 
 pub struct App<'a> {
@@ -33,22 +41,21 @@ pub struct App<'a> {
     pub editor: Editor<'a>,
     pub should_quit: bool,
     pub quit_pending: bool,
-    // Chat state - Some(step_index) when waiting for response
     pub chat_pending: Option<usize>,
-    // Pending chat request to be processed by main loop (step_index, walkthrough, messages)
     pub chat_request: Option<(usize, Walkthrough, Vec<Message>)>,
-    // Set to true when user requests retry from error state
     pub retry_requested: bool,
-    // Original diff input for retry
+    pub generation_requested: bool,
     pub diff_input: Option<String>,
-    // File filter for retry
     pub diff_filter: FileFilter,
-    // Search state for diff viewer
     pub search: SearchState,
+    pub review_mode: ReviewMode,
+    pub setup_focus: SetupFocus,
+    pub api_key_input: String,
+    pub api_key_source: ApiKeySource,
 }
 
 impl<'a> App<'a> {
-    pub fn new(walkthrough: Walkthrough, settings: &Settings) -> Self {
+    pub fn new(walkthrough: Walkthrough, settings: &Settings, mode: ReviewMode) -> Self {
         let step_count = walkthrough.step_count();
         Self {
             state: AppState::Ready,
@@ -65,19 +72,27 @@ impl<'a> App<'a> {
             chat_pending: None,
             chat_request: None,
             retry_requested: false,
+            generation_requested: false,
             diff_input: None,
             diff_filter: FileFilter::default(),
             search: SearchState::new(),
+            review_mode: mode,
+            setup_focus: SetupFocus::Mode,
+            api_key_input: String::new(),
+            api_key_source: ApiKeySource::Missing,
         }
     }
 
-    /// Create an app in loading state (empty walkthrough)
-    pub fn loading(settings: &Settings) -> Self {
+    pub fn setup(settings: &Settings, mode: ReviewMode) -> Self {
+        let (api_key, source) = settings.resolve_api_key();
+        let api_key_input = api_key.unwrap_or_default();
+        let focus = if source == ApiKeySource::Missing {
+            SetupFocus::ApiKey
+        } else {
+            SetupFocus::Mode
+        };
         Self {
-            state: AppState::Loading {
-                status: "Initializing...".to_string(),
-                steps_received: 0,
-            },
+            state: AppState::Setup,
             walkthrough: Walkthrough { steps: vec![] },
             current_step: 0,
             visited_steps: vec![],
@@ -91,10 +106,26 @@ impl<'a> App<'a> {
             chat_pending: None,
             chat_request: None,
             retry_requested: false,
+            generation_requested: false,
             diff_input: None,
             diff_filter: FileFilter::default(),
             search: SearchState::new(),
+            review_mode: mode,
+            setup_focus: focus,
+            api_key_input,
+            api_key_source: source,
         }
+    }
+
+    pub fn confirm_setup(&mut self) {
+        if self.api_key_input.trim().is_empty() {
+            return;
+        }
+        self.state = AppState::Loading {
+            status: "Initializing...".to_string(),
+            steps_received: 0,
+        };
+        self.generation_requested = true;
     }
 
     /// Transition to ready state with the given walkthrough

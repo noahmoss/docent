@@ -2,9 +2,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 use ratatui::layout::Size;
 use tui_textarea::{CursorMove, Input};
 
-use crate::app::App;
+use crate::app::{App, AppState, SetupFocus};
 use crate::editor::VimInputMode;
 use crate::layout::{Divider, Pane};
+use crate::model::ReviewMode;
+use crate::settings::ApiKeySource;
 use crate::constants::{DIVIDER_HIT_ZONE, HELP_BAR_HEIGHT};
 use crate::ui::diff_viewer;
 
@@ -58,6 +60,12 @@ impl InputHandler {
             return;
         }
 
+        // Handle setup screen
+        if matches!(app.state, AppState::Setup) {
+            self.handle_setup_input(key, app);
+            return;
+        }
+
         // Handle search input mode
         if app.search.active {
             self.handle_search_input(key, app);
@@ -92,6 +100,58 @@ impl InputHandler {
                 app.execute_search_incremental();
             }
             _ => {}
+        }
+    }
+
+    fn handle_setup_input(&mut self, key: KeyEvent, app: &mut App) {
+        match app.setup_focus {
+            SetupFocus::Mode => match key.code {
+                KeyCode::Tab | KeyCode::BackTab => {
+                    app.setup_focus = SetupFocus::ApiKey;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    app.setup_focus = SetupFocus::ApiKey;
+                }
+                KeyCode::Char(' ') | KeyCode::Char('k') | KeyCode::Up => {
+                    app.review_mode = match app.review_mode {
+                        ReviewMode::Review => ReviewMode::Walkthrough,
+                        ReviewMode::Walkthrough => ReviewMode::Review,
+                    };
+                }
+                KeyCode::Enter => app.confirm_setup(),
+                KeyCode::Char('q') => app.quit(),
+                _ => {}
+            },
+            SetupFocus::ApiKey => {
+                let is_editable = matches!(
+                    app.api_key_source,
+                    ApiKeySource::Missing | ApiKeySource::UserEntry
+                );
+                match key.code {
+                    KeyCode::Tab | KeyCode::BackTab => {
+                        app.setup_focus = SetupFocus::Mode;
+                    }
+                    KeyCode::Char('k') | KeyCode::Up if !is_editable => {
+                        app.setup_focus = SetupFocus::Mode;
+                    }
+                    KeyCode::Enter => app.confirm_setup(),
+                    KeyCode::Backspace if is_editable => {
+                        app.api_key_input.pop();
+                        if app.api_key_input.is_empty() {
+                            app.api_key_source = ApiKeySource::Missing;
+                        }
+                    }
+                    KeyCode::Char('q') if !is_editable => app.quit(),
+                    KeyCode::Char(c) if is_editable => {
+                        app.api_key_input.push(c);
+                        app.api_key_source = ApiKeySource::UserEntry;
+                    }
+                    KeyCode::Esc if is_editable => {
+                        app.setup_focus = SetupFocus::Mode;
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 

@@ -11,6 +11,14 @@ pub enum VimMode {
     Disabled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiKeySource {
+    EnvVar,
+    Settings,
+    UserEntry,
+    Missing,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EditorSettings {
     #[serde(default)]
@@ -21,6 +29,8 @@ pub struct EditorSettings {
 pub struct Settings {
     #[serde(default)]
     pub editor: EditorSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
 }
 
 impl Settings {
@@ -30,6 +40,15 @@ impl Settings {
             .and_then(|path| fs::read_to_string(path).ok())
             .and_then(|contents| serde_json::from_str(&contents).ok())
             .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let path = Self::settings_path().ok_or("Could not determine home directory")?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("Failed to create settings dir: {e}"))?;
+        }
+        let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize settings: {e}"))?;
+        fs::write(&path, json).map_err(|e| format!("Failed to write settings: {e}"))
     }
 
     fn settings_path() -> Option<PathBuf> {
@@ -44,6 +63,21 @@ impl Settings {
             VimMode::Disabled => false,
             VimMode::Auto => detect_vim_from_inputrc(),
         }
+    }
+
+    /// Resolve the API key from env var or saved settings, returning the key and its source.
+    pub fn resolve_api_key(&self) -> (Option<String>, ApiKeySource) {
+        if let Ok(key) = std::env::var("ANTHROPIC_API_KEY")
+            && !key.is_empty()
+        {
+            return (Some(key), ApiKeySource::EnvVar);
+        }
+        if let Some(key) = &self.api_key
+            && !key.is_empty()
+        {
+            return (Some(key.clone()), ApiKeySource::Settings);
+        }
+        (None, ApiKeySource::Missing)
     }
 }
 

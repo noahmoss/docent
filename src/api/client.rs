@@ -4,10 +4,10 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::api::types::{
-    ApiError, CreateWalkthroughResponse, CHAT_SYSTEM_PROMPT, CREATE_WALKTHROUGH_TOOL,
-    WALKTHROUGH_SYSTEM_PROMPT,
+    ApiError, CreateWalkthroughResponse, CREATE_WALKTHROUGH_TOOL, chat_system_prompt,
+    walkthrough_system_prompt,
 };
-use crate::model::{Message, MessageRole, Walkthrough};
+use crate::model::{Message, MessageRole, ReviewMode, Walkthrough};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const MODEL: &str = "claude-sonnet-4-20250514";
@@ -35,6 +35,7 @@ impl ClaudeClient {
     pub async fn generate_walkthrough(
         &self,
         diff_prompt: &str,
+        mode: ReviewMode,
     ) -> Result<CreateWalkthroughResponse, ApiError> {
         let tool: serde_json::Value = serde_json::from_str(CREATE_WALKTHROUGH_TOOL)
             .map_err(|e| ApiError::Parse(format!("invalid tool schema: {}", e)))?;
@@ -42,7 +43,7 @@ impl ClaudeClient {
         let request_body = json!({
             "model": MODEL,
             "max_tokens": 4096,
-            "system": WALKTHROUGH_SYSTEM_PROMPT,
+            "system": walkthrough_system_prompt(mode),
             "tools": [tool],
             "tool_choice": {"type": "tool", "name": "create_walkthrough"},
             "messages": [
@@ -100,6 +101,7 @@ impl ClaudeClient {
         walkthrough: &Walkthrough,
         step_index: usize,
         messages: &[Message],
+        mode: ReviewMode,
         chunk_tx: mpsc::Sender<String>,
     ) -> Result<(), ApiError> {
         let step = walkthrough
@@ -152,7 +154,7 @@ impl ClaudeClient {
         let request_body = json!({
             "model": MODEL,
             "max_tokens": 1024,
-            "system": CHAT_SYSTEM_PROMPT,
+            "system": chat_system_prompt(mode),
             "stream": true,
             "messages": api_messages
         });

@@ -10,13 +10,16 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
-use crate::app::{App, AppState};
+use crate::app::{App, AppState, SetupFocus};
 use crate::editor::VimInputMode;
 use crate::layout::Pane;
 use crate::colors;
 use crate::constants::{
     ERROR_DIALOG_HEIGHT, ERROR_DIALOG_WIDTH, LOADING_DIALOG_HEIGHT, LOADING_DIALOG_WIDTH,
+    SETUP_DIALOG_HEIGHT, SETUP_DIALOG_WIDTH,
 };
+use crate::model::ReviewMode;
+use crate::settings::ApiKeySource;
 
 /// Creates a styled block for a pane with consistent styling.
 pub fn pane_block(title: &str, borders: Borders, is_active: bool) -> Block<'_> {
@@ -34,6 +37,9 @@ pub fn pane_block(title: &str, borders: Borders, is_active: bool) -> Block<'_> {
 
 pub fn render(frame: &mut Frame, app: &App) {
     match &app.state {
+        AppState::Setup => {
+            render_setup(frame, frame.area(), app);
+        }
         AppState::Loading { status, steps_received } => {
             render_loading(frame, frame.area(), status, *steps_received);
         }
@@ -57,6 +63,162 @@ fn render_ready(frame: &mut Frame, app: &App) {
 
     render_main(frame, chunks[0], app);
     render_help_bar(frame, chunks[1], app);
+}
+
+fn render_setup(frame: &mut Frame, area: Rect, app: &App) {
+    let dialog_area = centered_rect(SETUP_DIALOG_WIDTH, SETUP_DIALOG_HEIGHT, area);
+    let block = Block::default()
+        .title(" docent ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .padding(Padding::new(2, 2, 1, 1));
+
+    let inner = block.inner(dialog_area);
+    frame.render_widget(block, dialog_area);
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // Subtitle
+            Constraint::Length(1), // Mode label
+            Constraint::Length(1), // Spacer
+            Constraint::Length(2), // Mode options
+            Constraint::Length(2), // Spacer + API key label
+            Constraint::Length(1), // Spacer
+            Constraint::Length(1), // API key value
+            Constraint::Min(1),   // Spacer
+            Constraint::Length(1), // Help bar
+        ])
+        .split(inner);
+
+    // Subtitle
+    let subtitle = Paragraph::new(Line::from(Span::styled(
+        "AI-guided code review walkthrough",
+        Style::default().fg(Color::DarkGray),
+    )))
+    .alignment(Alignment::Center);
+    frame.render_widget(subtitle, sections[0]);
+
+    // Mode section label
+    let mode_focused = app.setup_focus == SetupFocus::Mode;
+    let mode_label_color = if mode_focused { Color::Cyan } else { Color::DarkGray };
+    let mode_label = Paragraph::new(Line::from(Span::styled(
+        "Mode",
+        Style::default().fg(mode_label_color).add_modifier(Modifier::BOLD),
+    )));
+    frame.render_widget(mode_label, sections[1]);
+
+    // Mode options
+    let review_selected = app.review_mode == ReviewMode::Review;
+    let (review_bullet, walk_bullet) = if review_selected {
+        ("●", "○")
+    } else {
+        ("○", "●")
+    };
+
+    let review_style = if review_selected {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let walk_style = if !review_selected {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let cursor = if mode_focused { "> " } else { "  " };
+
+    let mode_lines = vec![
+        Line::from(vec![
+            Span::styled(cursor, Style::default().fg(Color::Cyan)),
+            Span::styled(format!("{review_bullet} Review"), review_style),
+            Span::styled("       Call out potential issues", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(format!("{walk_bullet} Walkthrough"), walk_style),
+            Span::styled("  Describe the changes", Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
+    let mode_widget = Paragraph::new(mode_lines);
+    frame.render_widget(mode_widget, sections[3]);
+
+    // API Key section label
+    let key_focused = app.setup_focus == SetupFocus::ApiKey;
+    let key_label_color = if key_focused { Color::Cyan } else { Color::DarkGray };
+    let key_label = Paragraph::new(Line::from(Span::styled(
+        "API Key",
+        Style::default().fg(key_label_color).add_modifier(Modifier::BOLD),
+    )));
+    frame.render_widget(key_label, sections[4]);
+
+    // API key value
+    let key_line = match app.api_key_source {
+        ApiKeySource::Missing if !key_focused => {
+            Line::from(Span::styled(
+                "  No API key found",
+                Style::default().fg(Color::Red),
+            ))
+        }
+        _ if key_focused
+            && matches!(app.api_key_source, ApiKeySource::Missing | ApiKeySource::UserEntry) =>
+        {
+            // Editable: show raw input with cursor
+            let display = if app.api_key_input.is_empty() {
+                "sk-ant-...".to_string()
+            } else {
+                app.api_key_input.clone()
+            };
+            let style = if app.api_key_input.is_empty() {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::from(vec![
+                Span::styled("> ", Style::default().fg(Color::Cyan)),
+                Span::styled(display, style),
+                Span::styled("█", Style::default().fg(Color::White)),
+            ])
+        }
+        _ => {
+            // Pre-filled: masked display with source label
+            let masked = mask_api_key(&app.api_key_input);
+            let source_label = match app.api_key_source {
+                ApiKeySource::EnvVar => " ✓ from env",
+                ApiKeySource::Settings => " ✓ saved",
+                ApiKeySource::UserEntry => " ✓ entered",
+                ApiKeySource::Missing => "",
+            };
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(masked, Style::default().fg(Color::Green)),
+                Span::styled(source_label, Style::default().fg(Color::DarkGray)),
+            ])
+        }
+    };
+    frame.render_widget(Paragraph::new(key_line), sections[6]);
+
+    // Help bar
+    let help_spans = vec![
+        Span::styled(" Enter ", Style::default().fg(Color::Yellow)),
+        Span::raw("start "),
+        Span::styled(" Tab ", Style::default().fg(Color::Yellow)),
+        Span::raw("switch "),
+        Span::styled(" q ", Style::default().fg(Color::Yellow)),
+        Span::raw("quit"),
+    ];
+    let help_line = Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center);
+    frame.render_widget(help_line, sections[8]);
+}
+
+fn mask_api_key(key: &str) -> String {
+    if key.len() <= 12 {
+        return "*".repeat(key.len());
+    }
+    let prefix = &key[..10];
+    format!("{prefix}...****")
 }
 
 fn render_loading(frame: &mut Frame, area: Rect, status: &str, _steps_received: usize) {
