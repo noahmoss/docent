@@ -5,6 +5,7 @@ mod constants;
 mod diff;
 mod editor;
 mod generation;
+mod github;
 mod input;
 mod layout;
 mod model;
@@ -144,8 +145,8 @@ fn spawn_chat_handler(
 #[derive(Parser, Debug)]
 #[command(name = "docent", version, about)]
 struct Args {
-    /// Path to a diff/patch file (or pipe diff via stdin)
-    #[arg(value_name = "FILE")]
+    /// Path to a diff/patch file or GitHub PR URL (or pipe diff via stdin)
+    #[arg(value_name = "FILE_OR_URL")]
     diff_file: Option<String>,
 
     /// Use mock data instead of generating from a diff
@@ -161,14 +162,19 @@ struct Args {
     excludes: Vec<String>,
 }
 
-fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
+async fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
     if args.use_mock {
         return Ok(None);
     }
 
-    // Try to read from file if specified
-    if let Some(path) = &args.diff_file {
-        return Ok(Some(std::fs::read_to_string(path)?));
+    if let Some(input) = &args.diff_file {
+        if github::parse_pr_url(input).is_some() {
+            let diff = github::fetch_diff(input)
+                .await
+                .map_err(io::Error::other)?;
+            return Ok(Some(diff));
+        }
+        return Ok(Some(std::fs::read_to_string(input)?));
     }
 
     // Check if stdin is piped - read from it before crossterm initializes
@@ -189,7 +195,7 @@ fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let args = Args::parse();
-    let diff_input = read_diff_input(&args)?;
+    let diff_input = read_diff_input(&args).await?;
 
     // Build and validate the file filter early
     let filter = FileFilter::new(&args.filters, &args.excludes).map_err(|e| {

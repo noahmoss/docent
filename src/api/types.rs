@@ -67,6 +67,7 @@ Guidelines:
 - Write summaries in markdown, highlighting key points with **bold**
 - Each hunk should appear in exactly one step
 - Aim for 5-10 steps for a typical PR, but use your judgment based on the complexity of the change
+- In step summaries, flag potential issues that are apparent from the diff alone: bugs, race conditions, missing error handling, security concerns, or behavioral changes that might be unintentional. Don't nitpick style or formatting — focus on things that could break or that the author should double-check.
 
 Call the create_walkthrough tool with your structured analysis."#;
 
@@ -78,8 +79,9 @@ You are discussing a specific step in a code review walkthrough. The step contai
 
 Answer questions concisely and helpfully. Focus on:
 - Explaining what the code does and why
-- Pointing out potential issues or improvements
-- Clarifying any confusing aspects of the change
+- Flagging potential bugs, edge cases, or correctness issues visible in the diff
+- Calling out things the author should verify (e.g., "does this handle the nil case?", "is this called from multiple threads?")
+- Don't nitpick style, naming, or formatting — focus on substance
 
 Keep responses brief but informative. Only use **bold** and `inline code` for formatting - no headers, lists, or code blocks."#;
 
