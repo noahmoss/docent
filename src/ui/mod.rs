@@ -433,6 +433,7 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
                 }
 
                 spans.extend(help("j/k", "scroll"));
+                spans.extend(help("+", "split step"));
                 spans.extend(help("z", if is_zoomed { "unzoom" } else { "zoom" }));
                 spans.extend(help("Ctrl+C", "quit"));
                 Line::from(spans)

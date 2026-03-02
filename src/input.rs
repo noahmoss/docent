@@ -452,6 +452,9 @@ impl InputHandler {
             // Toggle zoom mode
             KeyCode::Char('z') => app.layout.toggle_zoom(),
 
+            // Rechunk (split step into sub-steps)
+            KeyCode::Char('+') => app.request_rechunk(),
+
             // Search
             KeyCode::Char('/') => app.start_search(),
             KeyCode::Esc => app.clear_search(),

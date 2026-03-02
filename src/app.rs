@@ -1,7 +1,7 @@
 use crate::diff::FileFilter;
 use crate::editor::Editor;
 use crate::layout::{Divider, Layout, Pane};
-use crate::model::{Message, ReviewMode, Walkthrough};
+use crate::model::{Message, ReviewMode, Step, Walkthrough};
 use crate::scroll::{ChatScroll, DiffScroll};
 use crate::search::SearchState;
 use crate::settings::{ApiKeySource, Settings};
@@ -43,6 +43,8 @@ pub struct App<'a> {
     pub quit_pending: bool,
     pub chat_pending: Option<usize>,
     pub chat_request: Option<(usize, Walkthrough, Vec<Message>)>,
+    pub rechunk_pending: bool,
+    pub rechunk_request: Option<(usize, Step, Option<String>)>,
     pub retry_requested: bool,
     pub generation_requested: bool,
     pub diff_input: Option<String>,
@@ -71,6 +73,8 @@ impl<'a> App<'a> {
             quit_pending: false,
             chat_pending: None,
             chat_request: None,
+            rechunk_pending: false,
+            rechunk_request: None,
             retry_requested: false,
             generation_requested: false,
             diff_input: None,
@@ -105,6 +109,8 @@ impl<'a> App<'a> {
             quit_pending: false,
             chat_pending: None,
             chat_request: None,
+            rechunk_pending: false,
+            rechunk_request: None,
             retry_requested: false,
             generation_requested: false,
             diff_input: None,
@@ -358,6 +364,52 @@ impl<'a> App<'a> {
             if let Some(step) = self.walkthrough.steps.get_mut(step_index) {
                 step.messages.push(Message::assistant(format!("Error: {}", error)));
             }
+        }
+    }
+
+    pub fn request_rechunk(&mut self) {
+        if self.rechunk_pending || self.chat_pending.is_some() {
+            return;
+        }
+        if let Some(step) = self.current_step_data().cloned() {
+            let step_index = self.current_step;
+            let diff_text = self.diff_input.clone();
+            self.rechunk_pending = true;
+            self.rechunk_request = Some((step_index, step, diff_text));
+        }
+    }
+
+    pub fn receive_rechunk_complete(&mut self, step_index: usize, sub_steps: Vec<Step>) {
+        self.rechunk_pending = false;
+        if sub_steps.len() <= 1 {
+            return;
+        }
+
+        let sub_count = sub_steps.len();
+        self.walkthrough.steps.splice(step_index..=step_index, sub_steps);
+
+        // Fix visited_steps: remove the original and insert N false entries
+        if step_index < self.visited_steps.len() {
+            self.visited_steps.remove(step_index);
+            for i in 0..sub_count {
+                self.visited_steps.insert(step_index + i, false);
+            }
+        }
+
+        // Re-number step IDs
+        for (i, step) in self.walkthrough.steps.iter_mut().enumerate() {
+            step.id = format!("{}", i + 1);
+        }
+
+        self.diff_scroll.reset();
+        self.chat_scroll.reset();
+    }
+
+    pub fn receive_rechunk_error(&mut self, error: String) {
+        self.rechunk_pending = false;
+        if let Some(step) = self.walkthrough.steps.get_mut(self.current_step) {
+            step.messages
+                .push(Message::assistant(format!("Error splitting step: {}", error)));
         }
     }
 

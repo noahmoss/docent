@@ -148,7 +148,6 @@ fn render_chat_history(frame: &mut Frame, area: Rect, app: &App) {
 
         // Show thinking indicator if chat is pending and no response started yet
         if app.chat_pending == Some(app.current_step) {
-            // Check if last message is still the user's (no streaming response yet)
             let show_thinking = step
                 .messages
                 .last()
@@ -160,6 +159,13 @@ fn render_chat_history(frame: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(colors::CHAT_ASSISTANT_BULLET),
                 )));
             }
+        }
+
+        if app.rechunk_pending {
+            all_lines.push(Line::from(Span::styled(
+                "● Splitting step...",
+                Style::default().fg(colors::CHAT_ASSISTANT_BULLET),
+            )));
         }
 
         all_lines

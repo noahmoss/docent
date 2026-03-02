@@ -29,9 +29,9 @@ use api::ClaudeClient;
 use app::App;
 use constants::{EVENT_POLL_INTERVAL, EVENT_RECV_TIMEOUT, VIEWPORT_HEIGHT_OFFSET};
 use diff::FileFilter;
-use generation::WalkthroughGenerator;
+use generation::{WalkthroughGenerator, create_sub_steps, format_step_for_rechunk};
 use input::InputHandler;
-use model::{Message, ReviewMode, Walkthrough, mock_walkthrough};
+use model::{Message, ReviewMode, Step, Walkthrough, mock_walkthrough};
 use settings::Settings;
 
 /// Events that can occur in the app
@@ -48,6 +48,10 @@ enum AppEvent {
     ChatComplete(usize),
     /// Chat request failed (step_index, error_message)
     ChatError(usize, String),
+    /// Rechunk completed (step_index, sub_steps)
+    RechunkComplete(usize, Vec<Step>),
+    /// Rechunk failed (error_message)
+    RechunkError(String),
 }
 
 /// Spawns a task to generate a walkthrough from diff text
@@ -138,6 +142,54 @@ fn spawn_chat_handler(
                 let _ = tx
                     .send(AppEvent::ChatError(step_index, e.to_string()))
                     .await;
+            }
+        }
+    });
+}
+
+fn spawn_rechunk(
+    tx: mpsc::Sender<AppEvent>,
+    step_index: usize,
+    step: Step,
+    diff_text: Option<String>,
+    mode: ReviewMode,
+) {
+    tokio::spawn(async move {
+        match ClaudeClient::from_env() {
+            Ok(client) => {
+                let step_content = format_step_for_rechunk(&step);
+                let mut prompt = format!(
+                    "Please split this step into smaller sub-steps.\n\n\
+                     ## Step: {}\n\n{}\n\n## Hunks\n\n{}",
+                    step.title, step.summary, step_content
+                );
+                if let Some(diff) = diff_text {
+                    prompt.push_str(&format!(
+                        "\n\nHere is the full diff for context:\n\n{}",
+                        diff
+                    ));
+                }
+
+                match client.rechunk_step(&prompt, mode).await {
+                    Ok(response) => {
+                        match create_sub_steps(&step, response, &step.id) {
+                            Ok(sub_steps) => {
+                                let _ = tx
+                                    .send(AppEvent::RechunkComplete(step_index, sub_steps))
+                                    .await;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::RechunkError(e.to_string())).await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::RechunkError(e.to_string())).await;
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::RechunkError(e.to_string())).await;
             }
         }
     });
@@ -273,6 +325,10 @@ async fn run_app<B: Backend + Send>(
             spawn_chat_handler(tx.clone(), step_index, walkthrough, messages, app.review_mode);
         }
 
+        if let Some((step_index, step, diff_text)) = app.rechunk_request.take() {
+            spawn_rechunk(tx.clone(), step_index, step, diff_text, app.review_mode);
+        }
+
         if app.should_quit {
             break;
         }
@@ -351,6 +407,12 @@ fn handle_app_event<B: Backend>(
         }
         AppEvent::ChatError(step_index, error) => {
             app.receive_chat_error(step_index, error);
+        }
+        AppEvent::RechunkComplete(step_index, sub_steps) => {
+            app.receive_rechunk_complete(step_index, sub_steps);
+        }
+        AppEvent::RechunkError(error) => {
+            app.receive_rechunk_error(error);
         }
     }
     Ok(())

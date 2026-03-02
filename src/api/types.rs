@@ -147,3 +147,116 @@ pub struct WalkthroughStepResponse {
 pub struct CreateWalkthroughResponse {
     pub steps: Vec<WalkthroughStepResponse>,
 }
+
+/// Tool schema for Claude to rechunk a single step into sub-steps using line ranges
+pub const RECHUNK_STEP_TOOL: &str = r#"{
+  "name": "rechunk_step",
+  "description": "Split a single walkthrough step into smaller sub-steps using line ranges within hunks",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "steps": {
+        "type": "array",
+        "description": "Ordered list of sub-steps that replace the original step",
+        "items": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "Short title for this sub-step"
+            },
+            "summary": {
+              "type": "string",
+              "description": "Markdown explanation of what this sub-step does and why it matters"
+            },
+            "priority": {
+              "type": "string",
+              "enum": ["critical", "normal", "minor"],
+              "description": "How important this change is"
+            },
+            "ranges": {
+              "type": "array",
+              "description": "Line ranges within hunks that belong to this sub-step",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "hunk_index": {
+                    "type": "integer",
+                    "description": "1-based index of the hunk within the step"
+                  },
+                  "start_line": {
+                    "type": "integer",
+                    "description": "1-based start line within the hunk content (excluding @@ header)"
+                  },
+                  "end_line": {
+                    "type": "integer",
+                    "description": "1-based end line within the hunk content (excluding @@ header)"
+                  }
+                },
+                "required": ["hunk_index", "start_line", "end_line"]
+              }
+            }
+          },
+          "required": ["title", "summary", "priority", "ranges"]
+        }
+      }
+    },
+    "required": ["steps"]
+  }
+}"#;
+
+const RECHUNK_WALKTHROUGH_PROMPT: &str = r#"You are an expert code reviewer splitting a large walkthrough step into smaller sub-steps.
+
+You are given a single step from a code review walkthrough that is too large. Split it into 2-5 smaller sub-steps that each tell a coherent part of the story.
+
+Guidelines:
+- Each sub-step should group logically related lines together
+- Lines are numbered 1-based within each hunk (the @@ header line is excluded from numbering)
+- Every content line must appear in exactly one sub-step — no gaps, no overlaps
+- Order sub-steps from foundational to dependent where possible
+- Write summaries in markdown, highlighting key points with **bold**
+- Focus on describing what the code does and why
+
+Call the rechunk_step tool with your structured analysis."#;
+
+const RECHUNK_REVIEW_PROMPT: &str = r#"You are an expert code reviewer splitting a large review step into smaller sub-steps.
+
+You are given a single step from a code review that is too large. Split it into 2-5 smaller sub-steps that each tell a coherent part of the story.
+
+Guidelines:
+- Each sub-step should group logically related lines together
+- Lines are numbered 1-based within each hunk (the @@ header line is excluded from numbering)
+- Every content line must appear in exactly one sub-step — no gaps, no overlaps
+- Order sub-steps from foundational to dependent where possible
+- Write summaries in markdown, highlighting key points with **bold**
+- Be direct and opinionated: if something looks wrong, say so clearly
+- Flag: bugs, race conditions, missing error handling, security concerns
+
+Call the rechunk_step tool with your structured analysis."#;
+
+pub fn rechunk_system_prompt(mode: ReviewMode) -> &'static str {
+    match mode {
+        ReviewMode::Walkthrough => RECHUNK_WALKTHROUGH_PROMPT,
+        ReviewMode::Review => RECHUNK_REVIEW_PROMPT,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HunkRange {
+    pub hunk_index: usize,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RechunkStepResponse {
+    pub title: String,
+    pub summary: String,
+    pub priority: String,
+    pub ranges: Vec<HunkRange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RechunkResponse {
+    pub steps: Vec<RechunkStepResponse>,
+}
