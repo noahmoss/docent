@@ -9,13 +9,15 @@ use tokio::sync::mpsc;
 use crate::api::ClaudeClient;
 use crate::diff::FileFilter;
 use crate::generation::{WalkthroughGenerator, create_sub_steps, format_step_for_rechunk};
-use crate::model::{Message, ReviewMode, Step, Walkthrough};
+use crate::model::{CommitInfo, Message, ReviewMode, Step, Walkthrough};
 use crate::protocol::{
     NavigateAction, NavigateParams, Notification, Request, Response, SendMessageParams,
     StateSnapshot,
 };
 use crate::session::{Session, SessionState};
 use crate::settings::Settings;
+
+use super::DiffInput;
 
 enum EngineEvent {
     GenerationComplete(Walkthrough),
@@ -35,16 +37,18 @@ enum ServerEvent {
 }
 
 pub async fn run(
-    diff_input: Option<String>,
+    diff_input: Option<DiffInput>,
     filter: FileFilter,
     mode: ReviewMode,
 ) -> io::Result<()> {
-    let diff_text = diff_input.ok_or_else(|| {
+    let diff_input = diff_input.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "headless mode requires a diff input",
         )
     })?;
+    let diff_text = diff_input.diff_text;
+    let commits = diff_input.commits;
 
     let settings = Settings::load();
     let (api_key, source) = settings.resolve_api_key();
@@ -57,6 +61,7 @@ pub async fn run(
 
     let mut session = Session::new(Walkthrough { steps: vec![] }, mode);
     session.diff_input = Some(diff_text.clone());
+    session.commits = commits.clone();
     session.diff_filter = filter.clone();
     session.api_key_input = api_key.unwrap_or_default();
     session.api_key_source = source;
@@ -91,7 +96,7 @@ pub async fn run(
         status: "Generating...".to_string(),
         steps_received: 0,
     };
-    spawn_generation(tx.clone(), session.api_key_input.clone(), diff_text, filter, mode);
+    spawn_generation(tx.clone(), session.api_key_input.clone(), diff_text, filter, mode, commits);
 
     let mut clients: Vec<(usize, mpsc::Sender<String>)> = Vec::new();
     let mut next_client_id: usize = 0;
@@ -396,9 +401,10 @@ fn spawn_generation(
     diff_text: String,
     filter: FileFilter,
     mode: ReviewMode,
+    commits: Vec<CommitInfo>,
 ) {
     tokio::spawn(async move {
-        let event = match WalkthroughGenerator::with_filter(&diff_text, &filter, mode, api_key) {
+        let event = match WalkthroughGenerator::with_filter(&diff_text, &filter, mode, api_key, commits) {
             Ok(generator) => match generator.generate().await {
                 Ok(walkthrough) => EngineEvent::GenerationComplete(walkthrough),
                 Err(e) => EngineEvent::GenerationError(e.to_string()),

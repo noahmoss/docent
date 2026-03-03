@@ -1,5 +1,5 @@
 use crate::diff::FileFilter;
-use crate::model::{Message, ReviewMode, Step, Walkthrough};
+use crate::model::{CommitInfo, Message, ReviewMode, Step, Walkthrough};
 use crate::settings::ApiKeySource;
 
 use serde::Serialize;
@@ -33,6 +33,7 @@ pub struct Session {
     pub retry_requested: bool,
     pub generation_requested: bool,
     pub diff_input: Option<String>,
+    pub commits: Vec<CommitInfo>,
     pub diff_filter: FileFilter,
     pub api_key_input: String,
     pub api_key_source: ApiKeySource,
@@ -55,6 +56,7 @@ impl Session {
             retry_requested: false,
             generation_requested: false,
             diff_input: None,
+            commits: vec![],
             diff_filter: FileFilter::default(),
             api_key_input: String::new(),
             api_key_source: ApiKeySource::Missing,
@@ -76,6 +78,7 @@ impl Session {
             retry_requested: false,
             generation_requested: false,
             diff_input: None,
+            commits: vec![],
             diff_filter: FileFilter::default(),
             api_key_input,
             api_key_source,

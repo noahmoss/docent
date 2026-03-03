@@ -67,6 +67,7 @@ Guidelines:
 - Each hunk should appear in exactly one step
 - Aim for 5-10 steps for a typical PR, but use your judgment based on the complexity of the change
 - Focus on describing what the code does and why, not on finding problems
+- When a commit history is provided, use it to understand the author's intended progression. Commit boundaries and messages are a useful signal for grouping changes into steps, but reorganize freely if a different narrative order is clearer.
 
 Call the create_walkthrough tool with your structured analysis."#;
 
@@ -86,6 +87,7 @@ Guidelines:
 - Be direct and opinionated: if something looks wrong, say so clearly
 - Flag: bugs, race conditions, missing error handling, security concerns, behavioral changes that might be unintentional, questionable design choices
 - Don't nitpick style or formatting — focus on things that could break or that the author should reconsider
+- When a commit history is provided, use it to understand the author's intended progression. Commit boundaries and messages are a useful signal for grouping changes into steps, but reorganize freely if a different narrative order is clearer.
 
 Call the create_walkthrough tool with your structured analysis."#;
 

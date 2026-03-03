@@ -33,7 +33,7 @@ use constants::{EVENT_POLL_INTERVAL, EVENT_RECV_TIMEOUT, VIEWPORT_HEIGHT_OFFSET}
 use diff::FileFilter;
 use generation::{WalkthroughGenerator, create_sub_steps, format_step_for_rechunk};
 use input::InputHandler;
-use model::{Message, ReviewMode, Step, Walkthrough};
+use model::{CommitInfo, Message, ReviewMode, Step, Walkthrough};
 #[cfg(debug_assertions)]
 use model::mock_walkthrough;
 use settings::Settings;
@@ -65,9 +65,10 @@ fn spawn_walkthrough_generation(
     diff_text: String,
     filter: FileFilter,
     mode: ReviewMode,
+    commits: Vec<CommitInfo>,
 ) {
     tokio::spawn(async move {
-        match WalkthroughGenerator::with_filter(&diff_text, &filter, mode, api_key) {
+        match WalkthroughGenerator::with_filter(&diff_text, &filter, mode, api_key, commits) {
             Ok(generator) => match generator.generate().await {
                 Ok(walkthrough) => {
                     let _ = tx.send(AppEvent::GenerationComplete(walkthrough)).await;
@@ -218,23 +219,38 @@ struct Args {
     headless: bool,
 }
 
-async fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
+struct DiffInput {
+    diff_text: String,
+    commits:   Vec<CommitInfo>,
+}
+
+async fn read_diff_input(args: &Args) -> io::Result<Option<DiffInput>> {
     #[cfg(debug_assertions)]
     if args.use_mock {
         return Ok(None);
     }
 
     if let Some(input) = &args.diff_file {
-        if github::parse_github_url(input).is_some() {
+        if let Some(parsed) = github::parse_github_url(input) {
             let diff = github::fetch_diff(input).await.map_err(io::Error::other)?;
-            return Ok(Some(diff));
+            let commits = if let github::GitHubUrl::PullRequest { owner, repo, number } = parsed {
+                github::fetch_pr_commits(owner, repo, number)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
+            return Ok(Some(DiffInput { diff_text: diff, commits }));
         }
         if input.starts_with("https://") || input.starts_with("http://") {
             return Err(io::Error::other(format!(
                 "Unsupported URL: {input}\nExpected a GitHub URL like:\n  https://github.com/owner/repo/pull/123\n  https://github.com/owner/repo/commit/<sha>\n  https://github.com/owner/repo/compare/base...head"
             )));
         }
-        return Ok(Some(std::fs::read_to_string(input)?));
+        if is_git_range(input) {
+            return read_git_range(input).await.map(Some);
+        }
+        return Ok(Some(DiffInput { diff_text: std::fs::read_to_string(input)?, commits: vec![] }));
     }
 
     // Check if stdin is piped - read from it before crossterm initializes
@@ -246,10 +262,69 @@ async fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
         if input.trim().is_empty() {
             return Ok(None);
         }
-        return Ok(Some(input));
+        return Ok(Some(DiffInput { diff_text: input, commits: vec![] }));
     }
 
     Ok(None)
+}
+
+fn is_git_range(input: &str) -> bool {
+    (input.contains("..") || input.contains("..."))
+        && !input.starts_with("http")
+        && !std::path::Path::new(input).exists()
+}
+
+async fn read_git_range(range: &str) -> io::Result<DiffInput> {
+    let diff_output = tokio::process::Command::new("git")
+        .args(["diff", range])
+        .output()
+        .await
+        .map_err(|e| io::Error::other(format!("failed to run git diff: {e}")))?;
+
+    if !diff_output.status.success() {
+        let stderr = String::from_utf8_lossy(&diff_output.stderr);
+        return Err(io::Error::other(format!("git diff {range} failed: {stderr}")));
+    }
+
+    let diff_text = String::from_utf8_lossy(&diff_output.stdout).into_owned();
+    if diff_text.trim().is_empty() {
+        return Err(io::Error::other(format!("git diff {range} produced no output")));
+    }
+
+    let commits = read_git_log(range).await.unwrap_or_default();
+
+    Ok(DiffInput { diff_text, commits })
+}
+
+const GIT_LOG_SEPARATOR: &str = "---commit-boundary---";
+
+async fn read_git_log(range: &str) -> io::Result<Vec<CommitInfo>> {
+    let format = format!("{GIT_LOG_SEPARATOR}%n%H%n%s");
+    let output = tokio::process::Command::new("git")
+        .args(["log", "--reverse", &format!("--format={format}"), "--name-only", range])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        return Err(io::Error::other("git log failed"));
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut commits = Vec::new();
+
+    for block in text.split(GIT_LOG_SEPARATOR).skip(1) {
+        let mut lines = block.lines().filter(|l| !l.is_empty());
+        let Some(sha) = lines.next() else { continue };
+        let Some(message) = lines.next() else { continue };
+        let files: Vec<String> = lines.map(String::from).collect();
+        commits.push(CommitInfo {
+            sha:     sha.to_string(),
+            message: message.to_string(),
+            files,
+        });
+    }
+
+    Ok(commits)
 }
 
 #[tokio::main]
@@ -290,7 +365,7 @@ async fn main() -> io::Result<()> {
 
 async fn run_app<B: Backend + Send>(
     terminal: &mut Terminal<B>,
-    diff_input: Option<String>,
+    diff_input: Option<DiffInput>,
     filter: FileFilter,
     mode: ReviewMode,
 ) -> io::Result<()> {
@@ -298,7 +373,8 @@ async fn run_app<B: Backend + Send>(
 
     let mut app = if let Some(diff) = diff_input {
         let mut app = App::setup(&settings, mode);
-        app.session.diff_input = Some(diff);
+        app.session.commits = diff.commits;
+        app.session.diff_input = Some(diff.diff_text);
         app.session.diff_filter = filter;
         app
     } else {
@@ -387,6 +463,7 @@ async fn run_app<B: Backend + Send>(
                 diff_text,
                 app.session.diff_filter.clone(),
                 app.session.review_mode,
+                app.session.commits.clone(),
             );
         }
     }

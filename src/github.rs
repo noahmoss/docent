@@ -142,6 +142,56 @@ pub async fn fetch_diff(url: &str) -> Result<String, String> {
     Ok(text)
 }
 
+pub async fn fetch_pr_commits(owner: &str, repo: &str, number: &str) -> Result<Vec<crate::model::CommitInfo>, String> {
+    let api_url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}/commits?per_page=100");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+    let mut request = client
+        .get(&api_url)
+        .header("Accept", "application/vnd.github.v3+json")
+        .header("User-Agent", "docent");
+
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        request = request.header("Authorization", format!("Bearer {token}"));
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch PR commits: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub returned HTTP {} fetching commits",
+            response.status(),
+        ));
+    }
+
+    let items: Vec<serde_json::Value> = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse commits response: {e}"))?;
+
+    let commits = items
+        .into_iter()
+        .filter_map(|item| {
+            let sha = item.get("sha")?.as_str()?.to_string();
+            let message = item.get("commit")?.get("message")?.as_str()?.to_string();
+            Some(crate::model::CommitInfo {
+                sha,
+                message,
+                files: vec![],
+            })
+        })
+        .collect();
+
+    Ok(commits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

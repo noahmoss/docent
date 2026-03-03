@@ -4,7 +4,7 @@ use crate::api::{
     ApiError, ClaudeClient, CreateWalkthroughResponse, RechunkResponse, WalkthroughStepResponse,
 };
 use crate::diff::{DiffParseError, FileFilter, ParsedDiff};
-use crate::model::{Hunk, Message, Priority, ReviewMode, Step, Walkthrough};
+use crate::model::{CommitInfo, Hunk, Message, Priority, ReviewMode, Step, Walkthrough};
 
 #[derive(Debug, Error)]
 pub enum GenerationError {
@@ -27,8 +27,9 @@ pub enum GenerationError {
 
 pub struct WalkthroughGenerator {
     parsed_diff: ParsedDiff,
-    client: ClaudeClient,
-    mode: ReviewMode,
+    commits:     Vec<CommitInfo>,
+    client:      ClaudeClient,
+    mode:        ReviewMode,
 }
 
 impl WalkthroughGenerator {
@@ -37,6 +38,7 @@ impl WalkthroughGenerator {
         filter: &FileFilter,
         mode: ReviewMode,
         api_key: String,
+        commits: Vec<CommitInfo>,
     ) -> Result<Self, GenerationError> {
         let mut parsed_diff = ParsedDiff::parse(diff_text)?;
         parsed_diff.apply_filter(filter)?;
@@ -44,6 +46,7 @@ impl WalkthroughGenerator {
         let client = ClaudeClient::new(api_key);
         Ok(Self {
             parsed_diff,
+            commits,
             client,
             mode,
         })
@@ -56,12 +59,18 @@ impl WalkthroughGenerator {
     }
 
     fn build_prompt(&self) -> String {
-        format!(
+        let mut prompt = format!(
             "Please analyze this diff and create a code review walkthrough.\n\n\
              The diff contains {} hunks, numbered below:\n\n{}",
             self.parsed_diff.hunks.len(),
             self.parsed_diff.format_for_prompt()
-        )
+        );
+
+        if !self.commits.is_empty() {
+            prompt.push_str(&format_commits(&self.commits));
+        }
+
+        prompt
     }
 
     fn correlate_response(
@@ -114,6 +123,30 @@ impl WalkthroughGenerator {
             depth: 0,
         })
     }
+}
+
+fn format_commits(commits: &[CommitInfo]) -> String {
+    use std::fmt::Write;
+
+    let mut out = format!(
+        "\n## Commit History\n\n\
+         This change was developed across {} commits (oldest first):\n\n",
+        commits.len()
+    );
+
+    for (i, commit) in commits.iter().enumerate() {
+        let short_sha = &commit.sha[..7.min(commit.sha.len())];
+        let subject = commit.message.lines().next().unwrap_or(&commit.message);
+        let _ = write!(out, "{}. {} - {}", i + 1, short_sha, subject);
+
+        if !commit.files.is_empty() {
+            let _ = write!(out, "\n   Files: {}", commit.files.join(", "));
+        }
+
+        out.push('\n');
+    }
+
+    out
 }
 
 /// Format a step's hunks with numbered content lines for the rechunk prompt.
