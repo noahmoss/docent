@@ -104,19 +104,39 @@ impl InputHandler {
     }
 
     fn handle_setup_input(&mut self, key: KeyEvent, app: &mut App) {
+        let api_key_focusable = app.api_key_source != ApiKeySource::EnvVar;
+
         match app.setup_focus {
-            SetupFocus::Mode => match key.code {
-                KeyCode::Tab | KeyCode::BackTab => {
-                    app.setup_focus = SetupFocus::ApiKey;
-                }
+            SetupFocus::Review => match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
+                    app.setup_focus = SetupFocus::Walkthrough;
+                    app.review_mode = ReviewMode::Walkthrough;
+                }
+                KeyCode::Char(' ') => {
+                    app.setup_focus = SetupFocus::Walkthrough;
+                    app.review_mode = ReviewMode::Walkthrough;
+                }
+                KeyCode::Tab | KeyCode::BackTab if api_key_focusable => {
                     app.setup_focus = SetupFocus::ApiKey;
                 }
-                KeyCode::Char(' ') | KeyCode::Char('k') | KeyCode::Up => {
-                    app.review_mode = match app.review_mode {
-                        ReviewMode::Review => ReviewMode::Walkthrough,
-                        ReviewMode::Walkthrough => ReviewMode::Review,
-                    };
+                KeyCode::Enter => app.confirm_setup(),
+                KeyCode::Char('q') => app.quit(),
+                _ => {}
+            },
+            SetupFocus::Walkthrough => match key.code {
+                KeyCode::Char('j') | KeyCode::Down if api_key_focusable => {
+                    app.setup_focus = SetupFocus::ApiKey;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    app.setup_focus = SetupFocus::Review;
+                    app.review_mode = ReviewMode::Review;
+                }
+                KeyCode::Char(' ') => {
+                    app.setup_focus = SetupFocus::Review;
+                    app.review_mode = ReviewMode::Review;
+                }
+                KeyCode::Tab | KeyCode::BackTab if api_key_focusable => {
+                    app.setup_focus = SetupFocus::ApiKey;
                 }
                 KeyCode::Enter => app.confirm_setup(),
                 KeyCode::Char('q') => app.quit(),
@@ -129,10 +149,16 @@ impl InputHandler {
                 );
                 match key.code {
                     KeyCode::Tab | KeyCode::BackTab => {
-                        app.setup_focus = SetupFocus::Mode;
+                        app.setup_focus = match app.review_mode {
+                            ReviewMode::Review => SetupFocus::Review,
+                            ReviewMode::Walkthrough => SetupFocus::Walkthrough,
+                        };
                     }
                     KeyCode::Char('k') | KeyCode::Up if !is_editable => {
-                        app.setup_focus = SetupFocus::Mode;
+                        app.setup_focus = SetupFocus::Walkthrough;
+                    }
+                    KeyCode::Up => {
+                        app.setup_focus = SetupFocus::Walkthrough;
                     }
                     KeyCode::Enter => app.confirm_setup(),
                     KeyCode::Backspace if is_editable => {
@@ -147,7 +173,7 @@ impl InputHandler {
                         app.api_key_source = ApiKeySource::UserEntry;
                     }
                     KeyCode::Esc if is_editable => {
-                        app.setup_focus = SetupFocus::Mode;
+                        app.setup_focus = SetupFocus::Walkthrough;
                     }
                     _ => {}
                 }

@@ -119,6 +119,7 @@ impl WalkthroughGenerator {
             priority,
             hunks,
             messages: vec![Message::assistant(&response.summary)],
+            depth: 0,
         })
     }
 }
@@ -278,6 +279,7 @@ pub fn create_sub_steps(
             priority,
             hunks,
             messages: vec![Message::assistant(&step_response.summary)],
+            depth: 0,
         });
     }
 
@@ -365,6 +367,7 @@ mod tests {
                 "@@ -0,0 +1,4 @@\n+aaa\n+bbb\n+ccc\n+ddd",
             )],
             messages: vec![],
+            depth: 0,
         };
 
         let response = RechunkResponse {
@@ -411,6 +414,7 @@ mod tests {
             priority: Priority::Normal,
             hunks: vec![make_hunk("@@ -0,0 +1,2 @@\n+hello\n+world")],
             messages: vec![],
+            depth: 0,
         };
 
         let output = format_step_for_rechunk(&step);

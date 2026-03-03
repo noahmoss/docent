@@ -25,7 +25,8 @@ pub enum AppState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupFocus {
-    Mode,
+    Review,
+    Walkthrough,
     ApiKey,
 }
 
@@ -81,7 +82,7 @@ impl<'a> App<'a> {
             diff_filter: FileFilter::default(),
             search: SearchState::new(),
             review_mode: mode,
-            setup_focus: SetupFocus::Mode,
+            setup_focus: SetupFocus::Review,
             api_key_input: String::new(),
             api_key_source: ApiKeySource::Missing,
         }
@@ -93,7 +94,10 @@ impl<'a> App<'a> {
         let focus = if source == ApiKeySource::Missing {
             SetupFocus::ApiKey
         } else {
-            SetupFocus::Mode
+            match mode {
+                ReviewMode::Review => SetupFocus::Review,
+                ReviewMode::Walkthrough => SetupFocus::Walkthrough,
+            }
         };
         Self {
             state: AppState::Setup,
@@ -213,6 +217,7 @@ impl<'a> App<'a> {
 
     pub fn complete_step_and_advance(&mut self) {
         self.set_step_visited(self.current_step, true);
+        self.sync_parent_completion(self.current_step);
 
         if self.current_step < self.walkthrough.step_count().saturating_sub(1) {
             self.current_step += 1;
@@ -226,6 +231,7 @@ impl<'a> App<'a> {
     pub fn toggle_step_reviewed(&mut self) {
         let current = self.is_step_visited(self.current_step);
         self.set_step_visited(self.current_step, !current);
+        self.sync_parent_completion(self.current_step);
         self.walkthrough_complete = false;
     }
 
@@ -371,7 +377,11 @@ impl<'a> App<'a> {
         if self.rechunk_pending || self.chat_pending.is_some() {
             return;
         }
-        if let Some(step) = self.current_step_data().cloned() {
+        if let Some(step) = self.current_step_data() {
+            if step.hunks.is_empty() {
+                return;
+            }
+            let step = step.clone();
             let step_index = self.current_step;
             let diff_text = self.diff_input.clone();
             self.rechunk_pending = true;
@@ -385,24 +395,76 @@ impl<'a> App<'a> {
             return;
         }
 
-        let sub_count = sub_steps.len();
-        self.walkthrough.steps.splice(step_index..=step_index, sub_steps);
+        let parent_depth = self.walkthrough.steps[step_index].depth;
 
-        // Fix visited_steps: remove the original and insert N false entries
-        if step_index < self.visited_steps.len() {
-            self.visited_steps.remove(step_index);
-            for i in 0..sub_count {
-                self.visited_steps.insert(step_index + i, false);
-            }
+        // Clear parent's hunks — it becomes a group header
+        self.walkthrough.steps[step_index].hunks.clear();
+
+        // Insert sub-steps after the parent with incremented depth
+        let insert_pos = step_index + 1;
+        for (i, mut sub_step) in sub_steps.into_iter().enumerate() {
+            sub_step.depth = parent_depth + 1;
+            self.walkthrough.steps.insert(insert_pos + i, sub_step);
+            self.visited_steps.insert(insert_pos + i, false);
         }
 
-        // Re-number step IDs
-        for (i, step) in self.walkthrough.steps.iter_mut().enumerate() {
-            step.id = format!("{}", i + 1);
-        }
+        // Point to first child
+        self.current_step = insert_pos;
 
+        self.renumber_steps();
         self.diff_scroll.reset();
         self.chat_scroll.reset();
+    }
+
+    fn renumber_steps(&mut self) {
+        let mut counters: Vec<usize> = vec![0]; // stack of counters per depth
+        for step in &mut self.walkthrough.steps {
+            let d = step.depth as usize;
+            // Grow or shrink the counter stack to match current depth
+            counters.truncate(d + 1);
+            while counters.len() <= d {
+                counters.push(0);
+            }
+            counters[d] += 1;
+
+            step.id = if d == 0 {
+                format!("{}", counters[0])
+            } else {
+                counters[..=d]
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(".")
+            };
+        }
+    }
+
+    /// When a child step is marked visited, auto-complete its parent if all siblings are done.
+    fn sync_parent_completion(&mut self, child_index: usize) {
+        let child_depth = self.walkthrough.steps[child_index].depth;
+        if child_depth == 0 {
+            return;
+        }
+
+        // Find parent: walk backwards to the first step with lower depth
+        let parent_index = (0..child_index)
+            .rev()
+            .find(|&i| self.walkthrough.steps[i].depth < child_depth);
+        let Some(parent_index) = parent_index else {
+            return;
+        };
+
+        // Check if all children of this parent are visited
+        let all_done = self.walkthrough.steps[parent_index + 1..]
+            .iter()
+            .enumerate()
+            .take_while(|(_, s)| s.depth > self.walkthrough.steps[parent_index].depth)
+            .filter(|(_, s)| s.depth == child_depth)
+            .all(|(i, _)| self.is_step_visited(parent_index + 1 + i));
+
+        if all_done {
+            self.set_step_visited(parent_index, true);
+        }
     }
 
     pub fn receive_rechunk_error(&mut self, error: String) {

@@ -59,6 +59,8 @@ pub struct Step {
     pub hunks: Vec<Hunk>,
     #[serde(default)]
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub depth: u8,
 }
 
 impl Step {
@@ -114,6 +116,7 @@ pub fn mock_walkthrough() -> Walkthrough {
                 summary: summary1.to_string(),
                 priority: Priority::Critical,
                 messages: vec![Message::assistant(summary1)],
+                depth: 0,
                 hunks: vec![
                     Hunk {
                         file_path: "src/models/session.rs".to_string(),
@@ -154,6 +157,7 @@ pub fn mock_walkthrough() -> Walkthrough {
                 summary: summary2.to_string(),
                 priority: Priority::Critical,
                 messages: vec![Message::assistant(summary2)],
+                depth: 0,
                 hunks: vec![
                     Hunk {
                         file_path: "src/models/session.rs".to_string(),
@@ -192,6 +196,7 @@ pub fn mock_walkthrough() -> Walkthrough {
                 summary: summary3.to_string(),
                 priority: Priority::Normal,
                 messages: vec![Message::assistant(summary3)],
+                depth: 0,
                 hunks: vec![
                     Hunk {
                         file_path: "src/handlers/middleware.rs".to_string(),
@@ -228,6 +233,7 @@ pub fn mock_walkthrough() -> Walkthrough {
                 summary: summary4.to_string(),
                 priority: Priority::Minor,
                 messages: vec![Message::assistant(summary4)],
+                depth: 0,
                 hunks: vec![
                     Hunk {
                         file_path: "src/models/session_test.rs".to_string(),
@@ -278,6 +284,7 @@ pub fn mock_walkthrough() -> Walkthrough {
                 summary: summary5.to_string(),
                 priority: Priority::Minor,
                 messages: vec![Message::assistant(summary5)],
+                depth: 0,
                 hunks: vec![
                     Hunk {
                         file_path: "docs/API.md".to_string(),

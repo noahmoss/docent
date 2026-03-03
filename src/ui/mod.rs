@@ -82,10 +82,9 @@ fn render_setup(frame: &mut Frame, area: Rect, app: &App) {
         .constraints([
             Constraint::Length(2), // Subtitle
             Constraint::Length(1), // Mode label
-            Constraint::Length(1), // Spacer
             Constraint::Length(2), // Mode options
-            Constraint::Length(2), // Spacer + API key label
             Constraint::Length(1), // Spacer
+            Constraint::Length(1), // API key label
             Constraint::Length(1), // API key value
             Constraint::Min(1),   // Spacer
             Constraint::Length(1), // Help bar
@@ -101,7 +100,7 @@ fn render_setup(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(subtitle, sections[0]);
 
     // Mode section label
-    let mode_focused = app.setup_focus == SetupFocus::Mode;
+    let mode_focused = matches!(app.setup_focus, SetupFocus::Review | SetupFocus::Walkthrough);
     let mode_label_color = if mode_focused { Color::Cyan } else { Color::DarkGray };
     let mode_label = Paragraph::new(Line::from(Span::styled(
         "Mode",
@@ -128,22 +127,23 @@ fn render_setup(frame: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let cursor = if mode_focused { "> " } else { "  " };
+    let review_cursor = if app.setup_focus == SetupFocus::Review { "> " } else { "  " };
+    let walk_cursor = if app.setup_focus == SetupFocus::Walkthrough { "> " } else { "  " };
 
     let mode_lines = vec![
         Line::from(vec![
-            Span::styled(cursor, Style::default().fg(Color::Cyan)),
+            Span::styled(review_cursor, Style::default().fg(Color::Cyan)),
             Span::styled(format!("{review_bullet} Review"), review_style),
             Span::styled("       Call out potential issues", Style::default().fg(Color::DarkGray)),
         ]),
         Line::from(vec![
-            Span::raw("  "),
+            Span::styled(walk_cursor, Style::default().fg(Color::Cyan)),
             Span::styled(format!("{walk_bullet} Walkthrough"), walk_style),
             Span::styled("  Describe the changes", Style::default().fg(Color::DarkGray)),
         ]),
     ];
     let mode_widget = Paragraph::new(mode_lines);
-    frame.render_widget(mode_widget, sections[3]);
+    frame.render_widget(mode_widget, sections[2]);
 
     // API Key section label
     let key_focused = app.setup_focus == SetupFocus::ApiKey;
@@ -198,19 +198,25 @@ fn render_setup(frame: &mut Frame, area: Rect, app: &App) {
             ])
         }
     };
-    frame.render_widget(Paragraph::new(key_line), sections[6]);
+    frame.render_widget(Paragraph::new(key_line), sections[5]);
 
     // Help bar
-    let help_spans = vec![
+    let mut help_spans = vec![
         Span::styled(" Enter ", Style::default().fg(Color::Yellow)),
         Span::raw("start "),
-        Span::styled(" Tab ", Style::default().fg(Color::Yellow)),
-        Span::raw("switch "),
+    ];
+    if app.api_key_source != ApiKeySource::EnvVar {
+        help_spans.extend([
+            Span::styled(" Tab ", Style::default().fg(Color::Yellow)),
+            Span::raw("switch "),
+        ]);
+    }
+    help_spans.extend([
         Span::styled(" q ", Style::default().fg(Color::Yellow)),
         Span::raw("quit"),
-    ];
+    ]);
     let help_line = Paragraph::new(Line::from(help_spans)).alignment(Alignment::Center);
-    frame.render_widget(help_line, sections[8]);
+    frame.render_widget(help_line, sections[7]);
 }
 
 fn mask_api_key(key: &str) -> String {
