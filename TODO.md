@@ -23,3 +23,6 @@
 ## Ideas
 
 - [ ] Custom color schemes / theming support
+- [ ] **Syntax highlighting in diffs** — Use file extension to detect language, apply keyword highlighting on top of diff coloring. In TUI via `syntect`; in neovim plugin essentially free via treesitter extmarks.
+- [ ] **Go-to-definition within the diff** — Build a simple symbol index by scanning all hunks for function/class/struct definitions (regex per language). Let users jump to where a symbol is defined elsewhere in the diff (cross-step). No real LSP needed.
+- [ ] **Diff gutter sidebar** — Dedicated narrow column with `+`/`-`/`~` icons instead of relying solely on inline prefix coloring. In neovim plugin, use the sign column.

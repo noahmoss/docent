@@ -105,10 +105,10 @@ function M.start(args, callbacks)
       end
     end,
     on_stderr = function(_, data, _)
-      local msg = table.concat(data, "\n")
-      if msg ~= "" and callbacks.on_error then
+      local msg = vim.trim(table.concat(data, "\n"))
+      if msg ~= "" then
         vim.schedule(function()
-          callbacks.on_error(msg)
+          vim.notify("[docent] " .. msg, vim.log.levels.INFO)
         end)
       end
     end,
