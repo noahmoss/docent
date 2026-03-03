@@ -106,10 +106,7 @@ mod tests {
 
     #[test]
     fn test_combined_filter() {
-        let filter = FileFilter::new(
-            &["*.clj".to_string()],
-            &["*_test.clj".to_string()],
-        ).unwrap();
+        let filter = FileFilter::new(&["*.clj".to_string()], &["*_test.clj".to_string()]).unwrap();
         assert!(filter.matches("core.clj"));
         assert!(!filter.matches("core_test.clj"));
         assert!(!filter.matches("main.rs"));

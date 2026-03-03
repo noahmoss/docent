@@ -45,9 +45,11 @@ impl Settings {
     pub fn save(&self) -> Result<(), String> {
         let path = Self::settings_path().ok_or("Could not determine home directory")?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Failed to create settings dir: {e}"))?;
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create settings dir: {e}"))?;
         }
-        let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize settings: {e}"))?;
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize settings: {e}"))?;
         fs::write(&path, json).map_err(|e| format!("Failed to write settings: {e}"))
     }
 

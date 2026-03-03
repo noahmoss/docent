@@ -9,12 +9,14 @@ mod github;
 mod input;
 mod layout;
 mod model;
+mod protocol;
 mod scroll;
 mod search;
+mod session;
 mod settings;
 mod ui;
 
-use std::io::{self, stdout, IsTerminal, Read};
+use std::io::{self, IsTerminal, Read, stdout};
 
 use clap::Parser;
 use crossterm::{
@@ -80,18 +82,20 @@ fn spawn_walkthrough_generation(
 
 /// Spawns a thread to read terminal events and forward them to the event channel
 fn spawn_terminal_reader(tx: mpsc::Sender<AppEvent>) {
-    std::thread::spawn(move || loop {
-        match event::poll(EVENT_POLL_INTERVAL) {
-            Ok(true) => {
-                if let Ok(evt) = event::read()
-                    && tx.blocking_send(AppEvent::Terminal(evt)).is_err()
-                {
-                    break;
+    std::thread::spawn(move || {
+        loop {
+            match event::poll(EVENT_POLL_INTERVAL) {
+                Ok(true) => {
+                    if let Ok(evt) = event::read()
+                        && tx.blocking_send(AppEvent::Terminal(evt)).is_err()
+                    {
+                        break;
+                    }
                 }
-            }
-            Ok(false) => {}
-            Err(_) => {
-                std::thread::sleep(EVENT_POLL_INTERVAL);
+                Ok(false) => {}
+                Err(_) => {
+                    std::thread::sleep(EVENT_POLL_INTERVAL);
+                }
             }
         }
     });
@@ -171,18 +175,16 @@ fn spawn_rechunk(
                 }
 
                 match client.rechunk_step(&prompt, mode).await {
-                    Ok(response) => {
-                        match create_sub_steps(&step, response, &step.id) {
-                            Ok(sub_steps) => {
-                                let _ = tx
-                                    .send(AppEvent::RechunkComplete(step_index, sub_steps))
-                                    .await;
-                            }
-                            Err(e) => {
-                                let _ = tx.send(AppEvent::RechunkError(e.to_string())).await;
-                            }
+                    Ok(response) => match create_sub_steps(&step, response, &step.id) {
+                        Ok(sub_steps) => {
+                            let _ = tx
+                                .send(AppEvent::RechunkComplete(step_index, sub_steps))
+                                .await;
                         }
-                    }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::RechunkError(e.to_string())).await;
+                        }
+                    },
                     Err(e) => {
                         let _ = tx.send(AppEvent::RechunkError(e.to_string())).await;
                     }
@@ -218,6 +220,10 @@ struct Args {
     /// Walkthrough mode: describe the changes instead of giving an opinionated review
     #[arg(short = 'w', long = "walkthrough")]
     walkthrough: bool,
+
+    /// Run in headless mode (server only, no TUI)
+    #[arg(long = "headless")]
+    headless: bool,
 }
 
 async fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
@@ -227,9 +233,7 @@ async fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
 
     if let Some(input) = &args.diff_file {
         if github::parse_pr_url(input).is_some() {
-            let diff = github::fetch_diff(input)
-                .await
-                .map_err(io::Error::other)?;
+            let diff = github::fetch_diff(input).await.map_err(io::Error::other)?;
             return Ok(Some(diff));
         }
         if input.starts_with("https://") || input.starts_with("http://") {
@@ -261,21 +265,24 @@ async fn main() -> io::Result<()> {
     let diff_input = read_diff_input(&args).await?;
 
     // Build and validate the file filter early
-    let filter = FileFilter::new(&args.filters, &args.excludes).map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidInput, e.to_string())
-    })?;
-
-    // Setup terminal
-    enable_raw_mode()?;
-    stdout().execute(EnterAlternateScreen)?;
-    stdout().execute(EnableMouseCapture)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    let filter = FileFilter::new(&args.filters, &args.excludes)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
 
     let mode = if args.walkthrough {
         ReviewMode::Walkthrough
     } else {
         ReviewMode::default()
     };
+
+    if args.headless {
+        return headless::run(diff_input, filter, mode).await;
+    }
+
+    // Setup terminal
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    stdout().execute(EnableMouseCapture)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
     // Run app
     let result = run_app(&mut terminal, diff_input, filter, mode).await;
@@ -300,8 +307,8 @@ async fn run_app<B: Backend + Send>(
         App::new(mock_walkthrough(), &settings, mode)
     } else {
         let mut app = App::setup(&settings, mode);
-        app.diff_input = diff_input;
-        app.diff_filter = filter;
+        app.session.diff_input = diff_input;
+        app.session.diff_filter = filter;
         app
     };
 
@@ -311,65 +318,86 @@ async fn run_app<B: Backend + Send>(
     spawn_terminal_reader(tx.clone());
 
     loop {
-        let viewport_height = terminal.size()?.height.saturating_sub(VIEWPORT_HEIGHT_OFFSET) as usize;
+        let viewport_height = terminal
+            .size()?
+            .height
+            .saturating_sub(VIEWPORT_HEIGHT_OFFSET) as usize;
 
         terminal.draw(|frame| {
             ui::render(frame, &app);
         })?;
 
         if let Ok(Some(event)) = tokio::time::timeout(EVENT_RECV_TIMEOUT, rx.recv()).await {
-            handle_app_event(event, &mut app, &mut input_handler, terminal, viewport_height)?;
+            handle_app_event(
+                event,
+                &mut app,
+                &mut input_handler,
+                terminal,
+                viewport_height,
+            )?;
         }
 
-        if let Some((step_index, walkthrough, messages)) = app.chat_request.take() {
-            spawn_chat_handler(tx.clone(), step_index, walkthrough, messages, app.review_mode);
+        if let Some((step_index, walkthrough, messages)) = app.session.chat_request.take() {
+            spawn_chat_handler(
+                tx.clone(),
+                step_index,
+                walkthrough,
+                messages,
+                app.session.review_mode,
+            );
         }
 
-        if let Some((step_index, step, diff_text)) = app.rechunk_request.take() {
-            spawn_rechunk(tx.clone(), step_index, step, diff_text, app.review_mode);
+        if let Some((step_index, step, diff_text)) = app.session.rechunk_request.take() {
+            spawn_rechunk(
+                tx.clone(),
+                step_index,
+                step,
+                diff_text,
+                app.session.review_mode,
+            );
         }
 
         if app.should_quit {
             break;
         }
 
-        if app.generation_requested {
-            app.generation_requested = false;
+        if app.session.generation_requested {
+            app.session.generation_requested = false;
             // If the user entered a new key, propagate it
-            if app.api_key_source == settings::ApiKeySource::UserEntry {
+            if app.session.api_key_source == settings::ApiKeySource::UserEntry {
                 // Safety: process-scoped, no other threads reading this var
-                unsafe { std::env::set_var("ANTHROPIC_API_KEY", &app.api_key_input) };
-                settings.api_key = Some(app.api_key_input.clone());
+                unsafe { std::env::set_var("ANTHROPIC_API_KEY", &app.session.api_key_input) };
+                settings.api_key = Some(app.session.api_key_input.clone());
                 let _ = settings.save();
             }
-            if let Some(diff_text) = app.diff_input.clone() {
-                let status = match app.review_mode {
+            if let Some(diff_text) = app.session.diff_input.clone() {
+                let status = match app.session.review_mode {
                     ReviewMode::Walkthrough => "Generating walkthrough...",
                     ReviewMode::Review => "Generating review...",
                 };
-                app.set_loading_status(status.to_string());
+                app.session.set_loading_status(status.to_string());
                 spawn_walkthrough_generation(
                     tx.clone(),
                     diff_text,
-                    app.diff_filter.clone(),
-                    app.review_mode,
+                    app.session.diff_filter.clone(),
+                    app.session.review_mode,
                 );
             }
         }
 
-        if app.retry_requested {
-            app.retry_requested = false;
-            if let Some(diff_text) = app.diff_input.clone() {
-                let status = match app.review_mode {
+        if app.session.retry_requested {
+            app.session.retry_requested = false;
+            if let Some(diff_text) = app.session.diff_input.clone() {
+                let status = match app.session.review_mode {
                     ReviewMode::Walkthrough => "Generating walkthrough...",
                     ReviewMode::Review => "Generating review...",
                 };
-                app.set_loading_status(status.to_string());
+                app.session.set_loading_status(status.to_string());
                 spawn_walkthrough_generation(
                     tx.clone(),
                     diff_text,
-                    app.diff_filter.clone(),
-                    app.review_mode,
+                    app.session.diff_filter.clone(),
+                    app.session.review_mode,
                 );
             }
         }
@@ -394,26 +422,28 @@ fn handle_app_event<B: Backend>(
         }
         AppEvent::Terminal(_) => {}
         AppEvent::GenerationComplete(walkthrough) => {
-            app.set_ready(walkthrough);
+            app.session.set_ready(walkthrough);
         }
         AppEvent::GenerationError(message) => {
-            app.set_error(message);
+            app.session.set_error(message);
         }
         AppEvent::ChatChunk(step_index, chunk) => {
-            app.receive_chat_chunk(step_index, chunk);
+            app.session.receive_chat_chunk(step_index, chunk);
         }
         AppEvent::ChatComplete(step_index) => {
-            app.receive_chat_complete(step_index);
+            app.session.receive_chat_complete(step_index);
         }
         AppEvent::ChatError(step_index, error) => {
-            app.receive_chat_error(step_index, error);
+            app.session.receive_chat_error(step_index, error);
         }
         AppEvent::RechunkComplete(step_index, sub_steps) => {
             app.receive_rechunk_complete(step_index, sub_steps);
         }
         AppEvent::RechunkError(error) => {
-            app.receive_rechunk_error(error);
+            app.session.receive_rechunk_error(error);
         }
     }
     Ok(())
 }
+
+mod headless;

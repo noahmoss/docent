@@ -51,7 +51,10 @@ impl ParsedDiff {
         let mut index = 1usize;
 
         for patched_file in patch_set {
-            let file_path = patched_file.target_file.trim_start_matches("b/").to_string();
+            let file_path = patched_file
+                .target_file
+                .trim_start_matches("b/")
+                .to_string();
 
             for hunk in patched_file {
                 let start_line = hunk.target_start;
@@ -265,6 +268,9 @@ diff --git a/test/test.rs b/test/test.rs
         // Filter for non-existent file type
         let filter = FileFilter::new(&["*.py".to_string()], &[]).unwrap();
         let result = parsed.apply_filter(&filter);
-        assert!(matches!(result, Err(DiffParseError::Filter(FilterError::NoMatches))));
+        assert!(matches!(
+            result,
+            Err(DiffParseError::Filter(FilterError::NoMatches))
+        ));
     }
 }

@@ -140,7 +140,10 @@ mod tests {
 
     #[test]
     fn reject_non_pr_github_url() {
-        assert_eq!(parse_pr_url("https://github.com/owner/repo/issues/123"), None);
+        assert_eq!(
+            parse_pr_url("https://github.com/owner/repo/issues/123"),
+            None
+        );
     }
 
     #[test]

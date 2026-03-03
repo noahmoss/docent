@@ -8,8 +8,8 @@ use ratatui::{
 
 use super::pane_block;
 use crate::app::App;
-use crate::layout::Pane;
 use crate::colors;
+use crate::layout::Pane;
 use crate::search::SearchState;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -22,7 +22,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         inner_height
     };
 
-    let lines: Vec<Line> = if let Some(step) = app.current_step_data() {
+    let lines: Vec<Line> = if let Some(step) = app.session.current_step_data() {
         let mut all_lines: Vec<Line> = Vec::new();
         let mut line_index = 0usize;
 
@@ -32,7 +32,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 &format!("─── {} ───", hunk.file_path),
                 line_index,
                 &app.search,
-                Some(Style::default().fg(colors::DIFF_FILE_HEADER).add_modifier(Modifier::BOLD)),
+                Some(
+                    Style::default()
+                        .fg(colors::DIFF_FILE_HEADER)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ));
             line_index += 1;
 
@@ -87,8 +91,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     // Render search prompt at bottom of diff area (inside the border)
     if search_active {
         let prompt_area = Rect {
-            x: area.x + 1, // inside left border/padding
-            y: area.y + area.height - 2, // above bottom border
+            x: area.x + 1,                       // inside left border/padding
+            y: area.y + area.height - 2,         // above bottom border
             width: area.width.saturating_sub(2), // inside borders
             height: 1,
         };
@@ -116,7 +120,11 @@ fn get_base_style(line: &str) -> Style {
     }
 }
 
-fn style_diff_line_with_search(line: &str, line_index: usize, search: &SearchState) -> Line<'static> {
+fn style_diff_line_with_search(
+    line: &str,
+    line_index: usize,
+    search: &SearchState,
+) -> Line<'static> {
     let base_style = get_base_style(line);
     style_line_with_search(line, line_index, search, Some(base_style))
 }
@@ -201,7 +209,8 @@ fn style_line_with_search(
 }
 
 pub fn content_height(app: &App) -> usize {
-    app.current_step_data()
+    app.session
+        .current_step_data()
         .map(|step| step.diff_line_count())
         .unwrap_or(0)
 }

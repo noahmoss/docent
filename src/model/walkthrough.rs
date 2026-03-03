@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReviewMode {
     Walkthrough,
     #[default]
@@ -117,12 +118,11 @@ pub fn mock_walkthrough() -> Walkthrough {
                 priority: Priority::Critical,
                 messages: vec![Message::assistant(summary1)],
                 depth: 0,
-                hunks: vec![
-                    Hunk {
-                        file_path: "src/models/session.rs".to_string(),
-                        start_line: 1,
-                        end_line: 25,
-                        content: r#"@@ -0,0 +1,25 @@
+                hunks: vec![Hunk {
+                    file_path: "src/models/session.rs".to_string(),
+                    start_line: 1,
+                    end_line: 25,
+                    content: r#"@@ -0,0 +1,25 @@
 +use chrono::{DateTime, Duration, Utc};
 +use serde::{Deserialize, Serialize};
 +use uuid::Uuid;
@@ -147,9 +147,9 @@ pub fn mock_walkthrough() -> Walkthrough {
 +            is_active: true,
 +        }
 +    }
-+}"#.to_string(),
-                    },
-                ],
++}"#
+                    .to_string(),
+                }],
             },
             Step {
                 id: "2".to_string(),
@@ -158,12 +158,11 @@ pub fn mock_walkthrough() -> Walkthrough {
                 priority: Priority::Critical,
                 messages: vec![Message::assistant(summary2)],
                 depth: 0,
-                hunks: vec![
-                    Hunk {
-                        file_path: "src/models/session.rs".to_string(),
-                        start_line: 26,
-                        end_line: 45,
-                        content: r#"@@ -25,0 +26,20 @@
+                hunks: vec![Hunk {
+                    file_path: "src/models/session.rs".to_string(),
+                    start_line: 26,
+                    end_line: 45,
+                    content: r#"@@ -25,0 +26,20 @@
 +impl UserSession {
 +    pub fn is_valid(&self) -> bool {
 +        self.is_active && Utc::now() < self.expires_at
@@ -186,9 +185,9 @@ pub fn mock_walkthrough() -> Walkthrough {
 +            None
 +        }
 +    }
-+}"#.to_string(),
-                    },
-                ],
++}"#
+                    .to_string(),
+                }],
             },
             Step {
                 id: "3".to_string(),
@@ -197,12 +196,11 @@ pub fn mock_walkthrough() -> Walkthrough {
                 priority: Priority::Normal,
                 messages: vec![Message::assistant(summary3)],
                 depth: 0,
-                hunks: vec![
-                    Hunk {
-                        file_path: "src/handlers/middleware.rs".to_string(),
-                        start_line: 15,
-                        end_line: 35,
-                        content: r#"@@ -15,6 +15,21 @@
+                hunks: vec![Hunk {
+                    file_path: "src/handlers/middleware.rs".to_string(),
+                    start_line: 15,
+                    end_line: 35,
+                    content: r#"@@ -15,6 +15,21 @@
  use crate::models::session::UserSession;
 +use crate::error::ApiError;
 
@@ -223,9 +221,9 @@ pub fn mock_walkthrough() -> Walkthrough {
 +            Err(ApiError::Unauthorized)
 +        }
 +    }
- }"#.to_string(),
-                    },
-                ],
+ }"#
+                    .to_string(),
+                }],
             },
             Step {
                 id: "4".to_string(),
@@ -234,12 +232,11 @@ pub fn mock_walkthrough() -> Walkthrough {
                 priority: Priority::Minor,
                 messages: vec![Message::assistant(summary4)],
                 depth: 0,
-                hunks: vec![
-                    Hunk {
-                        file_path: "src/models/session_test.rs".to_string(),
-                        start_line: 1,
-                        end_line: 40,
-                        content: r#"@@ -0,0 +1,40 @@
+                hunks: vec![Hunk {
+                    file_path: "src/models/session_test.rs".to_string(),
+                    start_line: 1,
+                    end_line: 40,
+                    content: r#"@@ -0,0 +1,40 @@
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
@@ -274,9 +271,9 @@ pub fn mock_walkthrough() -> Walkthrough {
 +        session.refresh(Duration::hours(1));
 +        assert!(session.expires_at > original_expiry);
 +    }
-+}"#.to_string(),
-                    },
-                ],
++}"#
+                    .to_string(),
+                }],
             },
             Step {
                 id: "5".to_string(),
@@ -285,12 +282,11 @@ pub fn mock_walkthrough() -> Walkthrough {
                 priority: Priority::Minor,
                 messages: vec![Message::assistant(summary5)],
                 depth: 0,
-                hunks: vec![
-                    Hunk {
-                        file_path: "docs/API.md".to_string(),
-                        start_line: 45,
-                        end_line: 60,
-                        content: r#"@@ -45,3 +45,18 @@
+                hunks: vec![Hunk {
+                    file_path: "docs/API.md".to_string(),
+                    start_line: 45,
+                    end_line: 60,
+                    content: r#"@@ -45,3 +45,18 @@
  ## Authentication
 
 -All endpoints require authentication.
@@ -308,9 +304,9 @@ pub fn mock_walkthrough() -> Walkthrough {
 +| 401 | `unauthorized` | No session token provided |
 +| 401 | `session_expired` | Session has expired |
 +
-+Clients should handle 401 responses by redirecting to login."#.to_string(),
-                    },
-                ],
++Clients should handle 401 responses by redirecting to login."#
+                        .to_string(),
+                }],
             },
         ],
     }

@@ -8,8 +8,8 @@ use ratatui::{
 
 use super::pane_block;
 use crate::app::App;
-use crate::layout::Pane;
 use crate::colors;
+use crate::layout::Pane;
 use crate::model::Step;
 
 fn is_last_child(steps: &[Step], index: usize) -> bool {
@@ -21,14 +21,14 @@ fn is_last_child(steps: &[Step], index: usize) -> bool {
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let steps = &app.walkthrough.steps;
+    let steps = &app.session.walkthrough.steps;
 
     let items: Vec<ListItem> = steps
         .iter()
         .enumerate()
         .map(|(i, step)| {
-            let is_current = i == app.current_step;
-            let is_visited = app.is_step_visited(i);
+            let is_current = i == app.session.current_step;
+            let is_visited = app.session.is_step_visited(i);
 
             if step.depth > 0 {
                 // Child step: use tree characters instead of ○/✓
@@ -45,7 +45,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 };
 
                 let text_style = if is_current {
-                    Style::default().fg(colors::STEP_CURRENT).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(colors::STEP_CURRENT)
+                        .add_modifier(Modifier::BOLD)
                 } else if is_visited {
                     Style::default().fg(colors::STEP_COMPLETED)
                 } else {
@@ -58,7 +60,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 let indent = "  ".repeat(step.depth.saturating_sub(1) as usize);
 
                 let line = Line::from(vec![
-                    Span::styled(format!("{}{}", indent, branch), Style::default().fg(tree_color)),
+                    Span::styled(
+                        format!("{}{}", indent, branch),
+                        Style::default().fg(tree_color),
+                    ),
                     Span::styled(&step.title, text_style),
                     Span::styled(current_indicator, Style::default().fg(colors::STEP_CURRENT)),
                 ]);
@@ -73,7 +78,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 };
 
                 let text_style = if is_current {
-                    Style::default().fg(colors::STEP_CURRENT).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(colors::STEP_CURRENT)
+                        .add_modifier(Modifier::BOLD)
                 } else if is_visited {
                     Style::default().fg(colors::STEP_COMPLETED)
                 } else {
@@ -83,7 +90,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 let current_indicator = if is_current { " ←" } else { "" };
 
                 let line = Line::from(vec![
-                    Span::styled(format!("{} ", indicator), Style::default().fg(indicator_color)),
+                    Span::styled(
+                        format!("{} ", indicator),
+                        Style::default().fg(indicator_color),
+                    ),
                     Span::styled(&step.title, text_style),
                     Span::styled(current_indicator, Style::default().fg(colors::STEP_CURRENT)),
                 ]);
@@ -95,10 +105,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let title = format!(
         " Steps ({}/{}) · {}/{} lines ",
-        app.current_step + 1,
-        app.walkthrough.step_count(),
-        app.reviewed_diff_lines(),
-        app.total_diff_lines(),
+        app.session.current_step + 1,
+        app.session.walkthrough.step_count(),
+        app.session.reviewed_diff_lines(),
+        app.session.total_diff_lines(),
     );
 
     let is_active = app.layout.active_pane == Pane::Minimap;

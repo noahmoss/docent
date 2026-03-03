@@ -4,8 +4,8 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::api::types::{
-    ApiError, CreateWalkthroughResponse, RechunkResponse, CREATE_WALKTHROUGH_TOOL,
-    RECHUNK_STEP_TOOL, chat_system_prompt, rechunk_system_prompt, walkthrough_system_prompt,
+    ApiError, CREATE_WALKTHROUGH_TOOL, CreateWalkthroughResponse, RECHUNK_STEP_TOOL,
+    RechunkResponse, chat_system_prompt, rechunk_system_prompt, walkthrough_system_prompt,
 };
 use crate::model::{Message, MessageRole, ReviewMode, Walkthrough};
 
@@ -90,7 +90,9 @@ impl ClaudeClient {
             }
         }
 
-        Err(ApiError::Parse("no tool_use block found in response".to_string()))
+        Err(ApiError::Parse(
+            "no tool_use block found in response".to_string(),
+        ))
     }
 
     /// Rechunk a single step into smaller sub-steps.

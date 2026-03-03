@@ -9,9 +9,9 @@ use ratatui::{
 
 use super::pane_block;
 use crate::app::App;
-use crate::layout::Pane;
 use crate::colors;
 use crate::constants::{INPUT_MAX_LINES, INPUT_MIN_LINES};
+use crate::layout::Pane;
 use crate::model::MessageRole;
 
 /// Parse markdown text and return styled spans.
@@ -84,7 +84,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     let chunks = Layout::default()
         .constraints([
-            Constraint::Min(1),              // Chat history
+            Constraint::Min(1),               // Chat history
             Constraint::Length(input_height), // Input box (dynamic)
         ])
         .split(inner_area);
@@ -94,7 +94,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_chat_history(frame: &mut Frame, area: Rect, app: &App) {
-    let lines: Vec<Line> = if app.is_walkthrough_complete() {
+    let lines: Vec<Line> = if app.session.is_walkthrough_complete() {
         vec![
             Line::from(Span::styled(
                 "✓ Walkthrough complete!",
@@ -104,7 +104,7 @@ fn render_chat_history(frame: &mut Frame, area: Rect, app: &App) {
             Line::from("All steps have been reviewed."),
             Line::from("Press 'q' to exit or navigate back to review steps."),
         ]
-    } else if let Some(step) = app.current_step_data() {
+    } else if let Some(step) = app.session.current_step_data() {
         let mut all_lines: Vec<Line> = Vec::new();
 
         for message in &step.messages {
@@ -147,7 +147,7 @@ fn render_chat_history(frame: &mut Frame, area: Rect, app: &App) {
         }
 
         // Show thinking indicator if chat is pending and no response started yet
-        if app.chat_pending == Some(app.current_step) {
+        if app.session.chat_pending == Some(app.session.current_step) {
             let show_thinking = step
                 .messages
                 .last()
@@ -161,7 +161,7 @@ fn render_chat_history(frame: &mut Frame, area: Rect, app: &App) {
             }
         }
 
-        if app.rechunk_pending {
+        if app.session.rechunk_pending {
             all_lines.push(Line::from(Span::styled(
                 "● Splitting step...",
                 Style::default().fg(colors::CHAT_ASSISTANT_BULLET),

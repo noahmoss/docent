@@ -2,12 +2,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 use ratatui::layout::Size;
 use tui_textarea::{CursorMove, Input};
 
-use crate::app::{App, AppState, SetupFocus};
+use crate::app::{App, SetupFocus};
+use crate::constants::{DIVIDER_HIT_ZONE, HELP_BAR_HEIGHT};
 use crate::editor::VimInputMode;
 use crate::layout::{Divider, Pane};
 use crate::model::ReviewMode;
+use crate::session::SessionState;
 use crate::settings::ApiKeySource;
-use crate::constants::{DIVIDER_HIT_ZONE, HELP_BAR_HEIGHT};
 use crate::ui::diff_viewer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,10 +51,16 @@ impl InputHandler {
         // Any other key clears quit pending
         app.quit_pending = false;
 
+        // Help modal: any key dismisses it
+        if app.show_help {
+            app.show_help = false;
+            return;
+        }
+
         // Handle error state
-        if app.is_error() {
+        if app.session.is_error() {
             match key.code {
-                KeyCode::Char('r') => app.request_retry(),
+                KeyCode::Char('r') => app.session.request_retry(),
                 KeyCode::Char('q') => app.quit(),
                 _ => {}
             }
@@ -61,7 +68,7 @@ impl InputHandler {
         }
 
         // Handle setup screen
-        if matches!(app.state, AppState::Setup) {
+        if matches!(app.session.state, SessionState::Setup) {
             self.handle_setup_input(key, app);
             return;
         }
@@ -104,22 +111,22 @@ impl InputHandler {
     }
 
     fn handle_setup_input(&mut self, key: KeyEvent, app: &mut App) {
-        let api_key_focusable = app.api_key_source != ApiKeySource::EnvVar;
+        let api_key_focusable = app.session.api_key_source != ApiKeySource::EnvVar;
 
         match app.setup_focus {
             SetupFocus::Review => match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     app.setup_focus = SetupFocus::Walkthrough;
-                    app.review_mode = ReviewMode::Walkthrough;
+                    app.session.review_mode = ReviewMode::Walkthrough;
                 }
                 KeyCode::Char(' ') => {
                     app.setup_focus = SetupFocus::Walkthrough;
-                    app.review_mode = ReviewMode::Walkthrough;
+                    app.session.review_mode = ReviewMode::Walkthrough;
                 }
                 KeyCode::Tab | KeyCode::BackTab if api_key_focusable => {
                     app.setup_focus = SetupFocus::ApiKey;
                 }
-                KeyCode::Enter => app.confirm_setup(),
+                KeyCode::Enter => app.session.confirm_setup(),
                 KeyCode::Char('q') => app.quit(),
                 _ => {}
             },
@@ -129,27 +136,27 @@ impl InputHandler {
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     app.setup_focus = SetupFocus::Review;
-                    app.review_mode = ReviewMode::Review;
+                    app.session.review_mode = ReviewMode::Review;
                 }
                 KeyCode::Char(' ') => {
                     app.setup_focus = SetupFocus::Review;
-                    app.review_mode = ReviewMode::Review;
+                    app.session.review_mode = ReviewMode::Review;
                 }
                 KeyCode::Tab | KeyCode::BackTab if api_key_focusable => {
                     app.setup_focus = SetupFocus::ApiKey;
                 }
-                KeyCode::Enter => app.confirm_setup(),
+                KeyCode::Enter => app.session.confirm_setup(),
                 KeyCode::Char('q') => app.quit(),
                 _ => {}
             },
             SetupFocus::ApiKey => {
                 let is_editable = matches!(
-                    app.api_key_source,
+                    app.session.api_key_source,
                     ApiKeySource::Missing | ApiKeySource::UserEntry
                 );
                 match key.code {
                     KeyCode::Tab | KeyCode::BackTab => {
-                        app.setup_focus = match app.review_mode {
+                        app.setup_focus = match app.session.review_mode {
                             ReviewMode::Review => SetupFocus::Review,
                             ReviewMode::Walkthrough => SetupFocus::Walkthrough,
                         };
@@ -160,17 +167,17 @@ impl InputHandler {
                     KeyCode::Up => {
                         app.setup_focus = SetupFocus::Walkthrough;
                     }
-                    KeyCode::Enter => app.confirm_setup(),
+                    KeyCode::Enter => app.session.confirm_setup(),
                     KeyCode::Backspace if is_editable => {
-                        app.api_key_input.pop();
-                        if app.api_key_input.is_empty() {
-                            app.api_key_source = ApiKeySource::Missing;
+                        app.session.api_key_input.pop();
+                        if app.session.api_key_input.is_empty() {
+                            app.session.api_key_source = ApiKeySource::Missing;
                         }
                     }
                     KeyCode::Char('q') if !is_editable => app.quit(),
                     KeyCode::Char(c) if is_editable => {
-                        app.api_key_input.push(c);
-                        app.api_key_source = ApiKeySource::UserEntry;
+                        app.session.api_key_input.push(c);
+                        app.session.api_key_source = ApiKeySource::UserEntry;
                     }
                     KeyCode::Esc if is_editable => {
                         app.setup_focus = SetupFocus::Walkthrough;
@@ -297,7 +304,9 @@ impl InputHandler {
 
             // Motion commands
             KeyCode::Char('h') | KeyCode::Left => app.editor.textarea.move_cursor(CursorMove::Back),
-            KeyCode::Char('l') | KeyCode::Right => app.editor.textarea.move_cursor(CursorMove::Forward),
+            KeyCode::Char('l') | KeyCode::Right => {
+                app.editor.textarea.move_cursor(CursorMove::Forward)
+            }
             KeyCode::Char('j') | KeyCode::Down => app.editor.textarea.move_cursor(CursorMove::Down),
             KeyCode::Char('k') | KeyCode::Up => app.editor.textarea.move_cursor(CursorMove::Up),
             KeyCode::Char('w') => app.editor.textarea.move_cursor(CursorMove::WordForward),
@@ -308,15 +317,21 @@ impl InputHandler {
             KeyCode::Char('G') => app.editor.textarea.move_cursor(CursorMove::Bottom),
 
             // Edit commands
-            KeyCode::Char('x') => { app.editor.textarea.delete_char(); }
+            KeyCode::Char('x') => {
+                app.editor.textarea.delete_char();
+            }
             KeyCode::Char('d') => self.vim_pending = VimPending::D,
             KeyCode::Char('c') => self.vim_pending = VimPending::C,
-            KeyCode::Char('D') => { app.editor.textarea.delete_line_by_end(); }
+            KeyCode::Char('D') => {
+                app.editor.textarea.delete_line_by_end();
+            }
             KeyCode::Char('C') => {
                 app.editor.textarea.delete_line_by_end();
                 app.editor.vim_mode = VimInputMode::Insert;
             }
-            KeyCode::Char('u') => { app.editor.textarea.undo(); }
+            KeyCode::Char('u') => {
+                app.editor.textarea.undo();
+            }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.editor.textarea.redo();
             }
@@ -340,10 +355,18 @@ impl InputHandler {
                         app.editor.textarea.move_cursor(CursorMove::Head);
                         app.editor.textarea.delete_line_by_end();
                     }
-                    KeyCode::Char('w') => { app.editor.textarea.delete_next_word(); }
-                    KeyCode::Char('b') => { app.editor.textarea.delete_word(); }
-                    KeyCode::Char('$') => { app.editor.textarea.delete_line_by_end(); }
-                    KeyCode::Char('0') => { app.editor.textarea.delete_line_by_head(); }
+                    KeyCode::Char('w') => {
+                        app.editor.textarea.delete_next_word();
+                    }
+                    KeyCode::Char('b') => {
+                        app.editor.textarea.delete_word();
+                    }
+                    KeyCode::Char('$') => {
+                        app.editor.textarea.delete_line_by_end();
+                    }
+                    KeyCode::Char('0') => {
+                        app.editor.textarea.delete_line_by_head();
+                    }
                     _ => {}
                 }
                 true
@@ -427,9 +450,19 @@ impl InputHandler {
             KeyCode::Tab => app.set_active_pane(app.layout.active_pane.next()),
             KeyCode::BackTab => app.set_active_pane(app.layout.active_pane.prev()),
 
+            // Step navigation (arrow keys and Ctrl+n/p)
+            KeyCode::Down => app.next_step(),
+            KeyCode::Up => app.prev_step(),
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.next_step();
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.prev_step();
+            }
+
             // Scrolling diff
-            KeyCode::Char('j') | KeyCode::Down => app.scroll_down(1),
-            KeyCode::Char('k') | KeyCode::Up => app.scroll_up(1),
+            KeyCode::Char('j') => app.scroll_down(1),
+            KeyCode::Char('k') => app.scroll_up(1),
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.scroll_down(viewport_height / 2);
             }
@@ -448,38 +481,25 @@ impl InputHandler {
                 app.scroll_to_bottom(content_height, viewport_height);
             }
 
-            // Step navigation (n/p when not searching, otherwise search nav)
-            KeyCode::Char('n') => {
-                if app.search.query.is_some() {
-                    app.next_search_match();
-                } else {
-                    app.next_step();
-                }
-            }
-            KeyCode::Char('N') => {
-                if app.search.query.is_some() {
-                    app.prev_search_match();
-                }
-            }
-            KeyCode::Char('p') => {
-                if app.search.query.is_some() {
-                    app.prev_search_match();
-                } else {
-                    app.prev_step();
-                }
-            }
+            // Search navigation (n/p/N only active during search)
+            KeyCode::Char('n') if app.search.query.is_some() => app.next_search_match(),
+            KeyCode::Char('N') if app.search.query.is_some() => app.prev_search_match(),
+            KeyCode::Char('p') if app.search.query.is_some() => app.prev_search_match(),
 
             // Complete step and advance (or finish walkthrough)
             KeyCode::Enter => app.complete_step_and_advance(),
 
             // Toggle step reviewed
-            KeyCode::Char('x') => app.toggle_step_reviewed(),
+            KeyCode::Char('x') => app.session.toggle_step_reviewed(),
 
             // Toggle zoom mode
             KeyCode::Char('z') => app.layout.toggle_zoom(),
 
             // Rechunk (split step into sub-steps)
-            KeyCode::Char('+') => app.request_rechunk(),
+            KeyCode::Char('+') => app.session.request_rechunk(),
+
+            // Help modal
+            KeyCode::Char('?') => app.toggle_help(),
 
             // Search
             KeyCode::Char('/') => app.start_search(),
@@ -491,8 +511,10 @@ impl InputHandler {
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent, app: &mut App, size: Size) {
         let content_height = size.height.saturating_sub(HELP_BAR_HEIGHT);
-        let left_pane_width = (size.width as u32 * app.layout.left_pane_percent as u32 / 100) as u16;
-        let minimap_height = (content_height as u32 * app.layout.minimap_percent as u32 / 100) as u16;
+        let left_pane_width =
+            (size.width as u32 * app.layout.left_pane_percent as u32 / 100) as u16;
+        let minimap_height =
+            (content_height as u32 * app.layout.minimap_percent as u32 / 100) as u16;
 
         let near_vertical_divider = mouse.column.abs_diff(left_pane_width) <= DIVIDER_HIT_ZONE;
         let near_horizontal_divider =
@@ -510,7 +532,7 @@ impl InputHandler {
                         app.set_active_pane(Pane::Minimap);
                         // Account for border (1) and padding, each item is 1 row
                         let clicked_row = mouse.row.saturating_sub(1) as usize;
-                        if clicked_row < app.walkthrough.step_count() {
+                        if clicked_row < app.session.walkthrough.step_count() {
                             app.go_to_step(clicked_row);
                         }
                     } else {
@@ -527,7 +549,8 @@ impl InputHandler {
                 if let Some(divider) = app.layout.dragging {
                     match divider {
                         Divider::Vertical if size.width > 0 => {
-                            let new_percent = (mouse.column as u32 * 100 / size.width as u32) as u16;
+                            let new_percent =
+                                (mouse.column as u32 * 100 / size.width as u32) as u16;
                             app.set_left_pane_percent(new_percent);
                         }
                         Divider::Horizontal if content_height > 0 => {

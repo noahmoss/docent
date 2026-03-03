@@ -187,7 +187,11 @@ fn parse_hunk_header(header: &str) -> Option<(usize, usize)> {
 
 /// Slice a hunk by extracting content lines in the range `start_line..=end_line` (1-based).
 /// Reconstructs a valid Hunk with correct @@ header line numbers.
-pub fn slice_hunk(hunk: &Hunk, start_line: usize, end_line: usize) -> Result<Hunk, GenerationError> {
+pub fn slice_hunk(
+    hunk: &Hunk,
+    start_line: usize,
+    end_line: usize,
+) -> Result<Hunk, GenerationError> {
     let all_lines: Vec<&str> = hunk.content.lines().collect();
 
     // Separate @@ header from content lines
@@ -363,9 +367,7 @@ mod tests {
             title: "Big step".to_string(),
             summary: "A big step".to_string(),
             priority: Priority::Normal,
-            hunks: vec![make_hunk(
-                "@@ -0,0 +1,4 @@\n+aaa\n+bbb\n+ccc\n+ddd",
-            )],
+            hunks: vec![make_hunk("@@ -0,0 +1,4 @@\n+aaa\n+bbb\n+ccc\n+ddd")],
             messages: vec![],
             depth: 0,
         };

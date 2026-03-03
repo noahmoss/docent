@@ -10,15 +10,16 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
-use crate::app::{App, AppState, SetupFocus};
-use crate::editor::VimInputMode;
-use crate::layout::Pane;
+use crate::app::{App, SetupFocus};
 use crate::colors;
 use crate::constants::{
-    ERROR_DIALOG_HEIGHT, ERROR_DIALOG_WIDTH, LOADING_DIALOG_HEIGHT, LOADING_DIALOG_WIDTH,
-    SETUP_DIALOG_HEIGHT, SETUP_DIALOG_WIDTH,
+    ERROR_DIALOG_HEIGHT, ERROR_DIALOG_WIDTH, HELP_DIALOG_HEIGHT, HELP_DIALOG_WIDTH,
+    LOADING_DIALOG_HEIGHT, LOADING_DIALOG_WIDTH, SETUP_DIALOG_HEIGHT, SETUP_DIALOG_WIDTH,
 };
+use crate::editor::VimInputMode;
+use crate::layout::Pane;
 use crate::model::ReviewMode;
+use crate::session::SessionState;
 use crate::settings::ApiKeySource;
 
 /// Creates a styled block for a pane with consistent styling.
@@ -36,17 +37,20 @@ pub fn pane_block(title: &str, borders: Borders, is_active: bool) -> Block<'_> {
 }
 
 pub fn render(frame: &mut Frame, app: &App) {
-    match &app.state {
-        AppState::Setup => {
+    match &app.session.state {
+        SessionState::Setup => {
             render_setup(frame, frame.area(), app);
         }
-        AppState::Loading { status, steps_received } => {
+        SessionState::Loading {
+            status,
+            steps_received,
+        } => {
             render_loading(frame, frame.area(), status, *steps_received);
         }
-        AppState::Error { message } => {
+        SessionState::Error { message } => {
             render_error(frame, frame.area(), message);
         }
-        AppState::Ready => {
+        SessionState::Ready => {
             render_ready(frame, app);
         }
     }
@@ -63,6 +67,10 @@ fn render_ready(frame: &mut Frame, app: &App) {
 
     render_main(frame, chunks[0], app);
     render_help_bar(frame, chunks[1], app);
+
+    if app.show_help {
+        render_help_modal(frame, frame.area());
+    }
 }
 
 fn render_setup(frame: &mut Frame, area: Rect, app: &App) {
@@ -86,7 +94,7 @@ fn render_setup(frame: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(1), // Spacer
             Constraint::Length(1), // API key label
             Constraint::Length(1), // API key value
-            Constraint::Min(1),   // Spacer
+            Constraint::Min(1),    // Spacer
             Constraint::Length(1), // Help bar
         ])
         .split(inner);
@@ -100,16 +108,25 @@ fn render_setup(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(subtitle, sections[0]);
 
     // Mode section label
-    let mode_focused = matches!(app.setup_focus, SetupFocus::Review | SetupFocus::Walkthrough);
-    let mode_label_color = if mode_focused { Color::Cyan } else { Color::DarkGray };
+    let mode_focused = matches!(
+        app.setup_focus,
+        SetupFocus::Review | SetupFocus::Walkthrough
+    );
+    let mode_label_color = if mode_focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
     let mode_label = Paragraph::new(Line::from(Span::styled(
         "Mode",
-        Style::default().fg(mode_label_color).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(mode_label_color)
+            .add_modifier(Modifier::BOLD),
     )));
     frame.render_widget(mode_label, sections[1]);
 
     // Mode options
-    let review_selected = app.review_mode == ReviewMode::Review;
+    let review_selected = app.session.review_mode == ReviewMode::Review;
     let (review_bullet, walk_bullet) = if review_selected {
         ("●", "○")
     } else {
@@ -117,29 +134,47 @@ fn render_setup(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let review_style = if review_selected {
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     let walk_style = if !review_selected {
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let review_cursor = if app.setup_focus == SetupFocus::Review { "> " } else { "  " };
-    let walk_cursor = if app.setup_focus == SetupFocus::Walkthrough { "> " } else { "  " };
+    let review_cursor = if app.setup_focus == SetupFocus::Review {
+        "> "
+    } else {
+        "  "
+    };
+    let walk_cursor = if app.setup_focus == SetupFocus::Walkthrough {
+        "> "
+    } else {
+        "  "
+    };
 
     let mode_lines = vec![
         Line::from(vec![
             Span::styled(review_cursor, Style::default().fg(Color::Cyan)),
             Span::styled(format!("{review_bullet} Review"), review_style),
-            Span::styled("       Call out potential issues", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "       Call out potential issues",
+                Style::default().fg(Color::DarkGray),
+            ),
         ]),
         Line::from(vec![
             Span::styled(walk_cursor, Style::default().fg(Color::Cyan)),
             Span::styled(format!("{walk_bullet} Walkthrough"), walk_style),
-            Span::styled("  Describe the changes", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "  Describe the changes",
+                Style::default().fg(Color::DarkGray),
+            ),
         ]),
     ];
     let mode_widget = Paragraph::new(mode_lines);
@@ -147,31 +182,38 @@ fn render_setup(frame: &mut Frame, area: Rect, app: &App) {
 
     // API Key section label
     let key_focused = app.setup_focus == SetupFocus::ApiKey;
-    let key_label_color = if key_focused { Color::Cyan } else { Color::DarkGray };
+    let key_label_color = if key_focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
     let key_label = Paragraph::new(Line::from(Span::styled(
         "API Key",
-        Style::default().fg(key_label_color).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(key_label_color)
+            .add_modifier(Modifier::BOLD),
     )));
     frame.render_widget(key_label, sections[4]);
 
     // API key value
-    let key_line = match app.api_key_source {
-        ApiKeySource::Missing if !key_focused => {
-            Line::from(Span::styled(
-                "  No API key found",
-                Style::default().fg(Color::Red),
-            ))
-        }
+    let key_line = match app.session.api_key_source {
+        ApiKeySource::Missing if !key_focused => Line::from(Span::styled(
+            "  No API key found",
+            Style::default().fg(Color::Red),
+        )),
         _ if key_focused
-            && matches!(app.api_key_source, ApiKeySource::Missing | ApiKeySource::UserEntry) =>
+            && matches!(
+                app.session.api_key_source,
+                ApiKeySource::Missing | ApiKeySource::UserEntry
+            ) =>
         {
             // Editable: show raw input with cursor
-            let display = if app.api_key_input.is_empty() {
+            let display = if app.session.api_key_input.is_empty() {
                 "sk-ant-...".to_string()
             } else {
-                app.api_key_input.clone()
+                app.session.api_key_input.clone()
             };
-            let style = if app.api_key_input.is_empty() {
+            let style = if app.session.api_key_input.is_empty() {
                 Style::default().fg(Color::DarkGray)
             } else {
                 Style::default().fg(Color::White)
@@ -184,8 +226,8 @@ fn render_setup(frame: &mut Frame, area: Rect, app: &App) {
         }
         _ => {
             // Pre-filled: masked display with source label
-            let masked = mask_api_key(&app.api_key_input);
-            let source_label = match app.api_key_source {
+            let masked = mask_api_key(&app.session.api_key_input);
+            let source_label = match app.session.api_key_source {
                 ApiKeySource::EnvVar => " ✓ from env",
                 ApiKeySource::Settings => " ✓ saved",
                 ApiKeySource::UserEntry => " ✓ entered",
@@ -205,7 +247,7 @@ fn render_setup(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(" Enter ", Style::default().fg(Color::Yellow)),
         Span::raw("start "),
     ];
-    if app.api_key_source != ApiKeySource::EnvVar {
+    if app.session.api_key_source != ApiKeySource::EnvVar {
         help_spans.extend([
             Span::styled(" Tab ", Style::default().fg(Color::Yellow)),
             Span::raw("switch "),
@@ -246,7 +288,9 @@ fn render_loading(frame: &mut Frame, area: Rect, status: &str, _steps_received: 
         Line::from(vec![
             Span::styled(
                 spinner_frames[spinner_idx],
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
             Span::raw(status),
@@ -273,10 +317,7 @@ fn render_error(frame: &mut Frame, area: Rect, message: &str) {
 
     let text = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            message,
-            Style::default().fg(Color::Red),
-        )),
+        Line::from(Span::styled(message, Style::default().fg(Color::Red))),
         Line::from(""),
         Line::from(""),
         Line::from(Span::styled(
@@ -290,7 +331,10 @@ fn render_error(frame: &mut Frame, area: Rect, message: &str) {
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true });
 
-    frame.render_widget(paragraph, centered_rect(ERROR_DIALOG_WIDTH, ERROR_DIALOG_HEIGHT, area));
+    frame.render_widget(
+        paragraph,
+        centered_rect(ERROR_DIALOG_WIDTH, ERROR_DIALOG_HEIGHT, area),
+    );
 }
 
 /// Helper to create a centered rect
@@ -350,6 +394,61 @@ fn render_left_pane(frame: &mut Frame, area: Rect, app: &App) {
     explanation::render(frame, chunks[1], app);
 }
 
+fn render_help_modal(frame: &mut Frame, area: Rect) {
+    use ratatui::widgets::Clear;
+
+    let dialog_area = centered_rect(HELP_DIALOG_WIDTH, HELP_DIALOG_HEIGHT, area);
+
+    frame.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .title(" Keybindings ")
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .padding(Padding::new(2, 2, 1, 1));
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let key_style = Style::default().fg(Color::Yellow);
+    let heading = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+
+    let help_line = |key: &str, desc: &str| -> Line<'static> {
+        Line::from(vec![
+            Span::styled(format!("  {key:<20}"), key_style),
+            Span::raw(desc.to_string()),
+        ])
+    };
+
+    let text = vec![
+        Line::from(Span::styled("Navigation", heading)),
+        help_line("↑/↓  Ctrl+n/p", "Next/previous step"),
+        help_line("j/k", "Scroll diff"),
+        help_line("Ctrl+d/u", "Half-page scroll"),
+        help_line("gg/G", "Top/bottom of diff"),
+        help_line("Tab/Shift+Tab", "Cycle panes"),
+        help_line("Ctrl+h/j/k/l", "Move between panes"),
+        Line::from(""),
+        Line::from(Span::styled("Actions", heading)),
+        help_line("Enter", "Mark step & advance"),
+        help_line("x", "Toggle step reviewed"),
+        help_line("+", "Split step (rechunk)"),
+        help_line("i", "Enter chat mode"),
+        help_line("z", "Toggle zoom"),
+        Line::from(""),
+        Line::from(Span::styled("Search", heading)),
+        help_line("/", "Start search"),
+        help_line("n/p", "Next/prev match"),
+        help_line("Esc", "Clear search"),
+        Line::from(""),
+        Line::from(Span::styled("Press any key to close", dim)),
+    ];
+
+    let paragraph = Paragraph::new(text).block(block);
+    frame.render_widget(paragraph, dialog_area);
+}
+
 fn help(key: &str, action: &str) -> [Span<'static>; 2] {
     [
         Span::styled(format!(" {key} "), Style::default().fg(Color::Yellow)),
@@ -371,8 +470,16 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
                 if app.chat_scroll.in_scrollback() {
                     // Scrollback mode (works in both vim and non-vim)
                     let mut spans = vec![Span::styled(
-                        if is_zoomed { "-- ZOOMED | SCROLLBACK -- " } else { "-- SCROLLBACK -- " },
-                        Style::default().fg(if is_zoomed { Color::Cyan } else { Color::DarkGray }),
+                        if is_zoomed {
+                            "-- ZOOMED | SCROLLBACK -- "
+                        } else {
+                            "-- SCROLLBACK -- "
+                        },
+                        Style::default().fg(if is_zoomed {
+                            Color::Cyan
+                        } else {
+                            Color::DarkGray
+                        }),
                     )];
                     spans.extend(help("Ctrl+n/p", "scroll"));
                     if is_zoomed {
@@ -383,27 +490,43 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
                 } else if app.editor.vim_enabled && app.editor.vim_mode == VimInputMode::Insert {
                     // Vim insert mode
                     Line::from(Span::styled(
-                        if is_zoomed { "-- ZOOMED | INSERT --" } else { "-- INSERT --" },
-                        Style::default().fg(if is_zoomed { Color::Cyan } else { Color::DarkGray }),
+                        if is_zoomed {
+                            "-- ZOOMED | INSERT --"
+                        } else {
+                            "-- INSERT --"
+                        },
+                        Style::default().fg(if is_zoomed {
+                            Color::Cyan
+                        } else {
+                            Color::DarkGray
+                        }),
                     ))
                 } else if app.editor.vim_enabled {
                     // Vim normal mode
                     let mut spans = vec![];
                     if is_zoomed {
-                        spans.push(Span::styled("-- ZOOMED -- ", Style::default().fg(Color::Cyan)));
+                        spans.push(Span::styled(
+                            "-- ZOOMED -- ",
+                            Style::default().fg(Color::Cyan),
+                        ));
                     }
                     spans.extend(help("Ctrl+n/p", "scroll"));
                     spans.extend(help("z", if is_zoomed { "unzoom" } else { "zoom" }));
+                    spans.extend(help("?", "help"));
                     spans.extend(help("Ctrl+C", "quit"));
                     Line::from(spans)
                 } else {
                     // Non-vim mode
                     let mut spans = vec![];
                     if is_zoomed {
-                        spans.push(Span::styled("-- ZOOMED -- ", Style::default().fg(Color::Cyan)));
+                        spans.push(Span::styled(
+                            "-- ZOOMED -- ",
+                            Style::default().fg(Color::Cyan),
+                        ));
                     }
                     spans.extend(help("Ctrl+n/p", "scroll"));
                     spans.extend(help("Tab", "switch pane"));
+                    spans.extend(help("?", "help"));
                     spans.extend(help("Ctrl+C", "quit"));
                     Line::from(spans)
                 }
@@ -411,21 +534,27 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
             Pane::Minimap => {
                 let mut spans = vec![];
                 if is_zoomed {
-                    spans.push(Span::styled("-- ZOOMED -- ", Style::default().fg(Color::Cyan)));
+                    spans.push(Span::styled(
+                        "-- ZOOMED -- ",
+                        Style::default().fg(Color::Cyan),
+                    ));
                 }
-                spans.extend(help("n/p", "switch step"));
+                spans.extend(help("↑/↓", "switch step"));
                 spans.extend(help("Enter", "mark reviewed"));
                 spans.extend(help("z", if is_zoomed { "unzoom" } else { "zoom" }));
+                spans.extend(help("?", "help"));
                 spans.extend(help("Ctrl+C", "quit"));
                 Line::from(spans)
             }
             Pane::Diff => {
                 let mut spans = vec![];
                 if is_zoomed {
-                    spans.push(Span::styled("-- ZOOMED -- ", Style::default().fg(Color::Cyan)));
+                    spans.push(Span::styled(
+                        "-- ZOOMED -- ",
+                        Style::default().fg(Color::Cyan),
+                    ));
                 }
 
-                // Show search status if there's an active search
                 if app.search.query.is_some() {
                     let match_display = app.search.match_count_display();
                     spans.push(Span::styled(
@@ -435,12 +564,14 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
                     spans.extend(help("n/p", "next/prev"));
                     spans.extend(help("Esc", "clear"));
                 } else {
+                    spans.extend(help("↑/↓", "step"));
                     spans.extend(help("/", "search"));
                 }
 
                 spans.extend(help("j/k", "scroll"));
                 spans.extend(help("+", "split step"));
                 spans.extend(help("z", if is_zoomed { "unzoom" } else { "zoom" }));
+                spans.extend(help("?", "help"));
                 spans.extend(help("Ctrl+C", "quit"));
                 Line::from(spans)
             }
