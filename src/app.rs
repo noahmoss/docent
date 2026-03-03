@@ -1,5 +1,5 @@
 use crate::editor::Editor;
-use crate::layout::{Divider, Layout, Pane};
+use crate::layout::{Layout, Pane};
 use crate::model::{ReviewMode, Walkthrough};
 use crate::scroll::{ChatScroll, DiffScroll};
 use crate::search::SearchState;
@@ -150,10 +150,6 @@ impl<'a> App<'a> {
         self.session.send_message(content);
     }
 
-    pub fn textarea_is_empty(&self) -> bool {
-        self.editor.is_empty()
-    }
-
     pub fn scroll_chat_up(&mut self, amount: usize) {
         self.chat_scroll.scroll_up(amount);
     }
@@ -174,43 +170,13 @@ impl<'a> App<'a> {
         self.should_quit = true;
     }
 
-    pub fn set_left_pane_percent(&mut self, percent: u16) {
-        self.layout.set_left_pane_percent(percent);
-    }
-
-    pub fn set_minimap_percent(&mut self, percent: u16) {
-        self.layout.set_minimap_percent(percent);
-    }
-
-    pub fn start_drag(&mut self, divider: Divider) {
-        self.layout.start_drag(divider);
-    }
-
-    pub fn stop_drag(&mut self) {
-        self.layout.stop_drag();
-    }
-
     // --- Search ---
 
-    pub fn diff_lines(&self) -> Vec<String> {
-        let Some(step) = self.session.current_step_data() else {
-            return Vec::new();
-        };
-
-        let mut lines = Vec::new();
-        for hunk in &step.hunks {
-            lines.push(format!("─── {} ───", hunk.file_path));
-            lines.push(String::new());
-            for line in hunk.content.lines() {
-                lines.push(line.to_string());
-            }
-            lines.push(String::new());
-        }
-        lines
-    }
-
-    pub fn start_search(&mut self) {
-        self.search.start();
+    fn diff_lines(&self) -> Vec<String> {
+        self.session
+            .current_step_data()
+            .map(|step| step.display_lines())
+            .unwrap_or_default()
     }
 
     pub fn execute_search(&mut self) {
@@ -242,7 +208,4 @@ impl<'a> App<'a> {
         }
     }
 
-    pub fn clear_search(&mut self) {
-        self.search.clear();
-    }
 }

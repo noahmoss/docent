@@ -1,5 +1,6 @@
 use futures::StreamExt;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -30,132 +31,93 @@ impl ClaudeClient {
         Ok(Self::new(api_key))
     }
 
-    /// Generate a walkthrough from a diff prompt.
-    /// Returns the parsed tool call response.
+    async fn tool_use_request<T: DeserializeOwned>(
+        &self,
+        tool_schema: &str,
+        tool_name: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<T, ApiError> {
+        let tool: serde_json::Value = serde_json::from_str(tool_schema)
+            .map_err(|e| ApiError::Parse(format!("invalid tool schema: {}", e)))?;
+
+        let request_body = json!({
+            "model": MODEL,
+            "max_tokens": 4096,
+            "system": system_prompt,
+            "tools": [tool],
+            "tool_choice": {"type": "tool", "name": tool_name},
+            "messages": [
+                {
+                    "role": "user",
+                    "content": user_prompt
+                }
+            ]
+        });
+
+        let response = self
+            .client
+            .post(API_URL)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(ApiError::ApiResponse {
+                status: status.as_u16(),
+                message: body,
+            });
+        }
+
+        let api_response: ApiResponse = response
+            .json()
+            .await
+            .map_err(|e| ApiError::Parse(format!("failed to parse response: {}", e)))?;
+
+        for content in api_response.content {
+            if content.content_type == "tool_use"
+                && content.name.as_deref() == Some(tool_name)
+                && let Some(input) = content.input
+            {
+                return serde_json::from_value(input)
+                    .map_err(|e| ApiError::Parse(format!("failed to parse tool input: {}", e)));
+            }
+        }
+
+        Err(ApiError::Parse("no tool_use block found in response".to_string()))
+    }
+
     pub async fn generate_walkthrough(
         &self,
         diff_prompt: &str,
         mode: ReviewMode,
     ) -> Result<CreateWalkthroughResponse, ApiError> {
-        let tool: serde_json::Value = serde_json::from_str(CREATE_WALKTHROUGH_TOOL)
-            .map_err(|e| ApiError::Parse(format!("invalid tool schema: {}", e)))?;
-
-        let request_body = json!({
-            "model": MODEL,
-            "max_tokens": 4096,
-            "system": walkthrough_system_prompt(mode),
-            "tools": [tool],
-            "tool_choice": {"type": "tool", "name": "create_walkthrough"},
-            "messages": [
-                {
-                    "role": "user",
-                    "content": diff_prompt
-                }
-            ]
-        });
-
-        let response = self
-            .client
-            .post(API_URL)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&request_body)
-            .send()
-            .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(ApiError::ApiResponse {
-                status: status.as_u16(),
-                message: body,
-            });
-        }
-
-        let api_response: ApiResponse = response
-            .json()
-            .await
-            .map_err(|e| ApiError::Parse(format!("failed to parse response: {}", e)))?;
-
-        // Find the tool_use content block
-        for content in api_response.content {
-            if content.content_type == "tool_use"
-                && content.name.as_deref() == Some("create_walkthrough")
-                && let Some(input) = content.input
-            {
-                let walkthrough: CreateWalkthroughResponse = serde_json::from_value(input)
-                    .map_err(|e| ApiError::Parse(format!("failed to parse tool input: {}", e)))?;
-                return Ok(walkthrough);
-            }
-        }
-
-        Err(ApiError::Parse(
-            "no tool_use block found in response".to_string(),
-        ))
+        self.tool_use_request(
+            CREATE_WALKTHROUGH_TOOL,
+            "create_walkthrough",
+            walkthrough_system_prompt(mode),
+            diff_prompt,
+        )
+        .await
     }
 
-    /// Rechunk a single step into smaller sub-steps.
     pub async fn rechunk_step(
         &self,
         prompt: &str,
         mode: ReviewMode,
     ) -> Result<RechunkResponse, ApiError> {
-        let tool: serde_json::Value = serde_json::from_str(RECHUNK_STEP_TOOL)
-            .map_err(|e| ApiError::Parse(format!("invalid tool schema: {}", e)))?;
-
-        let request_body = json!({
-            "model": MODEL,
-            "max_tokens": 4096,
-            "system": rechunk_system_prompt(mode),
-            "tools": [tool],
-            "tool_choice": {"type": "tool", "name": "rechunk_step"},
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-        });
-
-        let response = self
-            .client
-            .post(API_URL)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&request_body)
-            .send()
-            .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(ApiError::ApiResponse {
-                status: status.as_u16(),
-                message: body,
-            });
-        }
-
-        let api_response: ApiResponse = response
-            .json()
-            .await
-            .map_err(|e| ApiError::Parse(format!("failed to parse response: {}", e)))?;
-
-        for content in api_response.content {
-            if content.content_type == "tool_use"
-                && content.name.as_deref() == Some("rechunk_step")
-                && let Some(input) = content.input
-            {
-                let rechunk: RechunkResponse = serde_json::from_value(input)
-                    .map_err(|e| ApiError::Parse(format!("failed to parse tool input: {}", e)))?;
-                return Ok(rechunk);
-            }
-        }
-
-        Err(ApiError::Parse(
-            "no tool_use block found in response".to_string(),
-        ))
+        self.tool_use_request(
+            RECHUNK_STEP_TOOL,
+            "rechunk_step",
+            rechunk_system_prompt(mode),
+            prompt,
+        )
+        .await
     }
 
     /// Chat about a specific step in the walkthrough with streaming.

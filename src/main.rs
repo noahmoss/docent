@@ -59,12 +59,13 @@ enum AppEvent {
 /// Spawns a task to generate a walkthrough from diff text
 fn spawn_walkthrough_generation(
     tx: mpsc::Sender<AppEvent>,
+    api_key: String,
     diff_text: String,
     filter: FileFilter,
     mode: ReviewMode,
 ) {
     tokio::spawn(async move {
-        match WalkthroughGenerator::with_filter(&diff_text, &filter, mode) {
+        match WalkthroughGenerator::with_filter(&diff_text, &filter, mode, api_key) {
             Ok(generator) => match generator.generate().await {
                 Ok(walkthrough) => {
                     let _ = tx.send(AppEvent::GenerationComplete(walkthrough)).await;
@@ -104,43 +105,36 @@ fn spawn_terminal_reader(tx: mpsc::Sender<AppEvent>) {
 /// Spawns a task to handle streaming chat with the Claude API
 fn spawn_chat_handler(
     tx: mpsc::Sender<AppEvent>,
+    api_key: String,
     step_index: usize,
     walkthrough: Walkthrough,
     messages: Vec<Message>,
     mode: ReviewMode,
 ) {
     tokio::spawn(async move {
-        match ClaudeClient::from_env() {
-            Ok(client) => {
-                let (chunk_tx, mut chunk_rx) = mpsc::channel::<String>(32);
+        let client = ClaudeClient::new(api_key);
+        let (chunk_tx, mut chunk_rx) = mpsc::channel::<String>(32);
 
-                let tx_chunks = tx.clone();
-                let forward_task = tokio::spawn(async move {
-                    while let Some(chunk) = chunk_rx.recv().await {
-                        if tx_chunks
-                            .send(AppEvent::ChatChunk(step_index, chunk))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                });
-
-                match client
-                    .chat_streaming(&walkthrough, step_index, &messages, mode, chunk_tx)
+        let tx_chunks = tx.clone();
+        let forward_task = tokio::spawn(async move {
+            while let Some(chunk) = chunk_rx.recv().await {
+                if tx_chunks
+                    .send(AppEvent::ChatChunk(step_index, chunk))
                     .await
+                    .is_err()
                 {
-                    Ok(()) => {
-                        let _ = forward_task.await;
-                        let _ = tx.send(AppEvent::ChatComplete(step_index)).await;
-                    }
-                    Err(e) => {
-                        let _ = tx
-                            .send(AppEvent::ChatError(step_index, e.to_string()))
-                            .await;
-                    }
+                    break;
                 }
+            }
+        });
+
+        match client
+            .chat_streaming(&walkthrough, step_index, &messages, mode, chunk_tx)
+            .await
+        {
+            Ok(()) => {
+                let _ = forward_task.await;
+                let _ = tx.send(AppEvent::ChatComplete(step_index)).await;
             }
             Err(e) => {
                 let _ = tx
@@ -361,8 +355,8 @@ async fn run_app<B: Backend + Send>(
             break;
         }
 
+        let should_generate = app.session.generation_requested || app.session.retry_requested;
         if app.session.generation_requested {
-            app.session.generation_requested = false;
             // If the user entered a new key, propagate it
             if app.session.api_key_source == settings::ApiKeySource::UserEntry {
                 // Safety: process-scoped, no other threads reading this var
@@ -370,36 +364,24 @@ async fn run_app<B: Backend + Send>(
                 settings.api_key = Some(app.session.api_key_input.clone());
                 let _ = settings.save();
             }
-            if let Some(diff_text) = app.session.diff_input.clone() {
-                let status = match app.session.review_mode {
-                    ReviewMode::Walkthrough => "Generating walkthrough...",
-                    ReviewMode::Review => "Generating review...",
-                };
-                app.session.set_loading_status(status.to_string());
-                spawn_walkthrough_generation(
-                    tx.clone(),
-                    diff_text,
-                    app.session.diff_filter.clone(),
-                    app.session.review_mode,
-                );
-            }
         }
+        app.session.generation_requested = false;
+        app.session.retry_requested = false;
 
-        if app.session.retry_requested {
-            app.session.retry_requested = false;
-            if let Some(diff_text) = app.session.diff_input.clone() {
-                let status = match app.session.review_mode {
-                    ReviewMode::Walkthrough => "Generating walkthrough...",
-                    ReviewMode::Review => "Generating review...",
-                };
-                app.session.set_loading_status(status.to_string());
-                spawn_walkthrough_generation(
-                    tx.clone(),
-                    diff_text,
-                    app.session.diff_filter.clone(),
-                    app.session.review_mode,
-                );
-            }
+        if should_generate
+            && let Some(diff_text) = app.session.diff_input.clone()
+        {
+            let status = match app.session.review_mode {
+                ReviewMode::Walkthrough => "Generating walkthrough...",
+                ReviewMode::Review => "Generating review...",
+            };
+            app.session.set_loading_status(status.to_string());
+            spawn_walkthrough_generation(
+                tx.clone(),
+                diff_text,
+                app.session.diff_filter.clone(),
+                app.session.review_mode,
+            );
         }
     }
 

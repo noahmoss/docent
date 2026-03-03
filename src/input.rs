@@ -9,7 +9,6 @@ use crate::layout::{Divider, Pane};
 use crate::model::ReviewMode;
 use crate::session::SessionState;
 use crate::settings::ApiKeySource;
-use crate::ui::diff_viewer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingKey {
@@ -477,7 +476,11 @@ impl InputHandler {
 
             // Go to bottom (G)
             KeyCode::Char('G') => {
-                let content_height = diff_viewer::content_height(app);
+                let content_height = app
+                    .session
+                    .current_step_data()
+                    .map(|s| s.diff_line_count())
+                    .unwrap_or(0);
                 app.scroll_to_bottom(content_height, viewport_height);
             }
 
@@ -502,8 +505,8 @@ impl InputHandler {
             KeyCode::Char('?') => app.toggle_help(),
 
             // Search
-            KeyCode::Char('/') => app.start_search(),
-            KeyCode::Esc => app.clear_search(),
+            KeyCode::Char('/') => app.search.start(),
+            KeyCode::Esc => app.search.clear(),
 
             _ => {}
         }
@@ -523,9 +526,9 @@ impl InputHandler {
         match mouse.kind {
             MouseEventKind::Down(_) => {
                 if near_vertical_divider {
-                    app.start_drag(Divider::Vertical);
+                    app.layout.start_drag(Divider::Vertical);
                 } else if near_horizontal_divider {
-                    app.start_drag(Divider::Horizontal);
+                    app.layout.start_drag(Divider::Horizontal);
                 } else if mouse.column < left_pane_width {
                     if mouse.row < minimap_height {
                         // Click in minimap - select step
@@ -551,19 +554,19 @@ impl InputHandler {
                         Divider::Vertical if size.width > 0 => {
                             let new_percent =
                                 (mouse.column as u32 * 100 / size.width as u32) as u16;
-                            app.set_left_pane_percent(new_percent);
+                            app.layout.set_left_pane_percent(new_percent);
                         }
                         Divider::Horizontal if content_height > 0 => {
                             let new_percent =
                                 (mouse.row as u32 * 100 / content_height as u32) as u16;
-                            app.set_minimap_percent(new_percent);
+                            app.layout.set_minimap_percent(new_percent);
                         }
                         _ => {}
                     }
                 }
             }
             MouseEventKind::Up(_) => {
-                app.stop_drag();
+                app.layout.stop_drag();
             }
             MouseEventKind::ScrollUp => {
                 if mouse.column < left_pane_width {

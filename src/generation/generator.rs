@@ -106,11 +106,7 @@ impl WalkthroughGenerator {
             }
         }
 
-        let priority = match response.priority.to_lowercase().as_str() {
-            "critical" => Priority::Critical,
-            "minor" => Priority::Minor,
-            _ => Priority::Normal,
-        };
+        let priority = Priority::parse(&response.priority);
 
         Ok(Step {
             id: format!("{}", step_index + 1),

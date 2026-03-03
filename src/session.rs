@@ -23,7 +23,7 @@ pub struct Session {
     pub state: SessionState,
     pub walkthrough: Walkthrough,
     pub current_step: usize,
-    pub visited_steps: Vec<bool>,
+    pub reviewed_steps: Vec<bool>,
     pub walkthrough_complete: bool,
     pub review_mode: ReviewMode,
     pub chat_pending: Option<usize>,
@@ -45,7 +45,7 @@ impl Session {
             state: SessionState::Ready,
             walkthrough,
             current_step: 0,
-            visited_steps: vec![false; step_count],
+            reviewed_steps: vec![false; step_count],
             walkthrough_complete: false,
             review_mode: mode,
             chat_pending: None,
@@ -66,7 +66,7 @@ impl Session {
             state: SessionState::Setup,
             walkthrough: Walkthrough { steps: vec![] },
             current_step: 0,
-            visited_steps: vec![],
+            reviewed_steps: vec![],
             walkthrough_complete: false,
             review_mode: mode,
             chat_pending: None,
@@ -98,7 +98,7 @@ impl Session {
     pub fn set_ready(&mut self, walkthrough: Walkthrough) {
         let step_count = walkthrough.step_count();
         self.walkthrough = walkthrough;
-        self.visited_steps = vec![false; step_count];
+        self.reviewed_steps = vec![false; step_count];
         self.current_step = 0;
         self.state = SessionState::Ready;
     }
@@ -131,7 +131,7 @@ impl Session {
     #[allow(dead_code)]
     pub fn add_step(&mut self, step: Step) {
         self.walkthrough.steps.push(step);
-        self.visited_steps.push(false);
+        self.reviewed_steps.push(false);
         if let SessionState::Loading { status, .. } = &self.state {
             self.state = SessionState::Loading {
                 status: status.clone(),
@@ -176,7 +176,7 @@ impl Session {
 
     /// Returns true if the step actually changed.
     pub fn complete_step_and_advance(&mut self) -> bool {
-        self.set_step_visited(self.current_step, true);
+        self.set_step_reviewed(self.current_step, true);
         self.sync_parent_completion(self.current_step);
 
         if self.current_step < self.walkthrough.step_count().saturating_sub(1) {
@@ -189,8 +189,8 @@ impl Session {
     }
 
     pub fn toggle_step_reviewed(&mut self) {
-        let current = self.is_step_visited(self.current_step);
-        self.set_step_visited(self.current_step, !current);
+        let current = self.is_step_reviewed(self.current_step);
+        self.set_step_reviewed(self.current_step, !current);
         self.sync_parent_completion(self.current_step);
         self.walkthrough_complete = false;
     }
@@ -198,16 +198,16 @@ impl Session {
     // --- Queries ---
 
     pub fn is_walkthrough_complete(&self) -> bool {
-        self.walkthrough_complete && self.visited_steps.iter().all(|&v| v)
+        self.walkthrough_complete && self.reviewed_steps.iter().all(|&v| v)
     }
 
-    pub fn is_step_visited(&self, index: usize) -> bool {
-        self.visited_steps.get(index).copied().unwrap_or(false)
+    pub fn is_step_reviewed(&self, index: usize) -> bool {
+        self.reviewed_steps.get(index).copied().unwrap_or(false)
     }
 
-    pub fn set_step_visited(&mut self, index: usize, visited: bool) {
-        if let Some(v) = self.visited_steps.get_mut(index) {
-            *v = visited;
+    pub fn set_step_reviewed(&mut self, index: usize, reviewed: bool) {
+        if let Some(v) = self.reviewed_steps.get_mut(index) {
+            *v = reviewed;
         }
     }
 
@@ -220,15 +220,11 @@ impl Session {
         self.walkthrough.steps.get_mut(self.current_step)
     }
 
-    fn step_diff_lines(step: &Step) -> usize {
-        step.hunks.iter().map(|h| h.content.lines().count()).sum()
-    }
-
     pub fn total_diff_lines(&self) -> usize {
         self.walkthrough
             .steps
             .iter()
-            .map(Self::step_diff_lines)
+            .map(|s| s.diff_line_count())
             .sum()
     }
 
@@ -237,8 +233,8 @@ impl Session {
             .steps
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.is_step_visited(*i))
-            .map(|(_, step)| Self::step_diff_lines(step))
+            .filter(|(i, _)| self.is_step_reviewed(*i))
+            .map(|(_, step)| step.diff_line_count())
             .sum()
     }
 
@@ -328,7 +324,7 @@ impl Session {
         for (i, mut sub_step) in sub_steps.into_iter().enumerate() {
             sub_step.depth = parent_depth + 1;
             self.walkthrough.steps.insert(insert_pos + i, sub_step);
-            self.visited_steps.insert(insert_pos + i, false);
+            self.reviewed_steps.insert(insert_pos + i, false);
         }
 
         self.current_step = insert_pos;
@@ -375,10 +371,10 @@ impl Session {
             .enumerate()
             .take_while(|(_, s)| s.depth > self.walkthrough.steps[parent_index].depth)
             .filter(|(_, s)| s.depth == child_depth)
-            .all(|(i, _)| self.is_step_visited(parent_index + 1 + i));
+            .all(|(i, _)| self.is_step_reviewed(parent_index + 1 + i));
 
         if all_done {
-            self.set_step_visited(parent_index, true);
+            self.set_step_reviewed(parent_index, true);
         }
     }
 

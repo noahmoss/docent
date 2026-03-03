@@ -90,7 +90,7 @@ impl Notification {
     pub fn step_changed(
         current_step: usize,
         step: &Step,
-        visited: &[bool],
+        reviewed: &[bool],
         walkthrough_complete: bool,
     ) -> Self {
         Self::new(
@@ -98,18 +98,18 @@ impl Notification {
             serde_json::json!({
                 "current_step": current_step,
                 "step": step,
-                "visited": visited,
+                "reviewed": reviewed,
                 "walkthrough_complete": walkthrough_complete,
             }),
         )
     }
 
-    pub fn walkthrough_loaded(walkthrough: &Walkthrough, visited: &[bool]) -> Self {
+    pub fn walkthrough_loaded(walkthrough: &Walkthrough, reviewed: &[bool]) -> Self {
         Self::new(
             "walkthrough_loaded",
             serde_json::json!({
                 "walkthrough": walkthrough,
-                "visited": visited,
+                "reviewed": reviewed,
             }),
         )
     }
@@ -131,13 +131,13 @@ impl Notification {
         )
     }
 
-    pub fn rechunk_complete(steps: &[Step], current_step: usize, visited: &[bool]) -> Self {
+    pub fn rechunk_complete(steps: &[Step], current_step: usize, reviewed: &[bool]) -> Self {
         Self::new(
             "rechunk_complete",
             serde_json::json!({
                 "steps": steps,
                 "current_step": current_step,
-                "visited": visited,
+                "reviewed": reviewed,
             }),
         )
     }
@@ -157,7 +157,7 @@ pub struct StateSnapshot {
     pub review_mode: ReviewMode,
     pub current_step: usize,
     pub walkthrough: Walkthrough,
-    pub visited: Vec<bool>,
+    pub reviewed: Vec<bool>,
     pub walkthrough_complete: bool,
     pub chat_pending: Option<usize>,
     pub rechunk_pending: bool,

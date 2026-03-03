@@ -207,7 +207,7 @@ fn render_input_box(frame: &mut Frame, area: Rect, app: &App) {
     let chat_focused = app.layout.active_pane == Pane::Chat;
 
     // Show placeholder or the textarea
-    if app.textarea_is_empty() && !chat_focused {
+    if app.editor.is_empty() && !chat_focused {
         let placeholder_style = Style::default().fg(colors::INPUT_PLACEHOLDER);
         let placeholder = "Press 'i' to ask a question";
         let input = Paragraph::new(Line::from(Span::styled(placeholder, placeholder_style)));

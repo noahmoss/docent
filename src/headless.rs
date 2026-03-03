@@ -157,7 +157,7 @@ pub async fn run(
                 {
                     let notif = Notification::walkthrough_loaded(
                         &session.walkthrough,
-                        &session.visited_steps,
+                        &session.reviewed_steps,
                     );
                     let json = serde_json::to_string(&notif).unwrap_or_default();
                     let _ = write_tx.send(format!("{}\n", json)).await;
@@ -261,7 +261,7 @@ fn handle_request(session: &mut Session, req: &Request) -> (Response, Vec<Notifi
                     notifications.push(Notification::step_changed(
                         session.current_step,
                         step,
-                        &session.visited_steps,
+                        &session.reviewed_steps,
                         session.walkthrough_complete,
                     ));
                 }
@@ -276,7 +276,7 @@ fn handle_request(session: &mut Session, req: &Request) -> (Response, Vec<Notifi
                 notifications.push(Notification::step_changed(
                     session.current_step,
                     step,
-                    &session.visited_steps,
+                    &session.reviewed_steps,
                     session.walkthrough_complete,
                 ));
             }
@@ -290,7 +290,7 @@ fn handle_request(session: &mut Session, req: &Request) -> (Response, Vec<Notifi
                 notifications.push(Notification::step_changed(
                     session.current_step,
                     step,
-                    &session.visited_steps,
+                    &session.reviewed_steps,
                     session.walkthrough_complete,
                 ));
             }
@@ -338,7 +338,7 @@ fn handle_engine_event(session: &mut Session, event: EngineEvent) -> Vec<Notific
             notifications.push(Notification::state_changed(&session.state));
             notifications.push(Notification::walkthrough_loaded(
                 &session.walkthrough,
-                &session.visited_steps,
+                &session.reviewed_steps,
             ));
         }
         EngineEvent::GenerationError(message) => {
@@ -363,7 +363,7 @@ fn handle_engine_event(session: &mut Session, event: EngineEvent) -> Vec<Notific
             notifications.push(Notification::rechunk_complete(
                 &session.walkthrough.steps,
                 session.current_step,
-                &session.visited_steps,
+                &session.reviewed_steps,
             ));
         }
         EngineEvent::RechunkError(error) => {
@@ -381,7 +381,7 @@ fn build_snapshot(session: &Session) -> StateSnapshot {
         review_mode: session.review_mode,
         current_step: session.current_step,
         walkthrough: session.walkthrough.clone(),
-        visited: session.visited_steps.clone(),
+        reviewed: session.reviewed_steps.clone(),
         walkthrough_complete: session.walkthrough_complete,
         chat_pending: session.chat_pending,
         rechunk_pending: session.rechunk_pending,

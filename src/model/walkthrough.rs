@@ -15,6 +15,16 @@ pub enum Priority {
     Minor,
 }
 
+impl Priority {
+    pub fn parse(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "critical" => Self::Critical,
+            "minor" => Self::Minor,
+            _ => Self::Normal,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageRole {
     Assistant,
@@ -65,17 +75,24 @@ pub struct Step {
 }
 
 impl Step {
-    /// Calculates the total number of display lines for this step's diff content.
-    /// Includes file headers, blank lines, and diff content lines.
+    /// Builds the display lines for this step's diff content.
+    /// This is the single source of truth for how diff content is laid out —
+    /// used by both the diff viewer for rendering and search for indexing.
+    pub fn display_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        for hunk in &self.hunks {
+            lines.push(format!("─── {} ───", hunk.file_path));
+            lines.push(String::new());
+            for line in hunk.content.lines() {
+                lines.push(line.to_string());
+            }
+            lines.push(String::new());
+        }
+        lines
+    }
+
     pub fn diff_line_count(&self) -> usize {
-        self.hunks
-            .iter()
-            .map(|hunk| {
-                2 // file header + blank line after header
-                + hunk.content.lines().count()
-                + 1 // trailing blank line
-            })
-            .sum()
+        self.display_lines().len()
     }
 }
 

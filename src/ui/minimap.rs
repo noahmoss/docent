@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(i, step)| {
             let is_current = i == app.session.current_step;
-            let is_visited = app.session.is_step_visited(i);
+            let is_reviewed = app.session.is_step_reviewed(i);
 
             if step.depth > 0 {
                 // Child step: use tree characters instead of ○/✓
@@ -38,7 +38,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                     "├── "
                 };
 
-                let tree_color = if is_visited {
+                let tree_color = if is_reviewed {
                     colors::STEP_COMPLETED
                 } else {
                     colors::STEP_PENDING
@@ -48,7 +48,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                     Style::default()
                         .fg(colors::STEP_CURRENT)
                         .add_modifier(Modifier::BOLD)
-                } else if is_visited {
+                } else if is_reviewed {
                     Style::default().fg(colors::STEP_COMPLETED)
                 } else {
                     Style::default().fg(colors::STEP_PENDING)
@@ -71,7 +71,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 ListItem::new(line)
             } else {
                 // Top-level step: original rendering
-                let (indicator, indicator_color) = if is_visited {
+                let (indicator, indicator_color) = if is_reviewed {
                     ("✓", colors::STEP_COMPLETED)
                 } else {
                     ("○", colors::STEP_PENDING)
@@ -81,7 +81,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                     Style::default()
                         .fg(colors::STEP_CURRENT)
                         .add_modifier(Modifier::BOLD)
-                } else if is_visited {
+                } else if is_reviewed {
                     Style::default().fg(colors::STEP_COMPLETED)
                 } else {
                     Style::default().fg(colors::STEP_PENDING)

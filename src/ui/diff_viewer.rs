@@ -23,38 +23,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let lines: Vec<Line> = if let Some(step) = app.session.current_step_data() {
-        let mut all_lines: Vec<Line> = Vec::new();
-        let mut line_index = 0usize;
-
-        for hunk in &step.hunks {
-            // File header
-            all_lines.push(style_line_with_search(
-                &format!("─── {} ───", hunk.file_path),
-                line_index,
-                &app.search,
-                Some(
-                    Style::default()
-                        .fg(colors::DIFF_FILE_HEADER)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ));
-            line_index += 1;
-
-            all_lines.push(style_line_with_search("", line_index, &app.search, None));
-            line_index += 1;
-
-            // Diff content with syntax highlighting
-            for line in hunk.content.lines() {
-                let styled_line = style_diff_line_with_search(line, line_index, &app.search);
-                all_lines.push(styled_line);
-                line_index += 1;
-            }
-
-            all_lines.push(style_line_with_search("", line_index, &app.search, None));
-            line_index += 1;
-        }
-
-        all_lines
+        step.display_lines()
+            .into_iter()
+            .enumerate()
+            .map(|(line_index, text)| style_diff_line_with_search(&text, line_index, &app.search))
+            .collect()
     } else {
         vec![Line::from("No diff content")]
     };
@@ -109,7 +82,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn get_base_style(line: &str) -> Style {
-    if line.starts_with("@@") {
+    if line.starts_with("───") {
+        Style::default()
+            .fg(colors::DIFF_FILE_HEADER)
+            .add_modifier(Modifier::BOLD)
+    } else if line.starts_with("@@") {
         Style::default().fg(colors::DIFF_HUNK_HEADER)
     } else if line.starts_with('+') && !line.starts_with("+++") {
         Style::default().fg(colors::DIFF_ADDED)
@@ -208,9 +185,3 @@ fn style_line_with_search(
     Line::from(spans)
 }
 
-pub fn content_height(app: &App) -> usize {
-    app.session
-        .current_step_data()
-        .map(|step| step.diff_line_count())
-        .unwrap_or(0)
-}
