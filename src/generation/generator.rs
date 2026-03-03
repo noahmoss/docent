@@ -32,20 +32,16 @@ pub struct WalkthroughGenerator {
 }
 
 impl WalkthroughGenerator {
-    #[allow(dead_code)]
-    pub fn new(diff_text: &str) -> Result<Self, GenerationError> {
-        Self::with_filter(diff_text, &FileFilter::default(), ReviewMode::default())
-    }
-
     pub fn with_filter(
         diff_text: &str,
         filter: &FileFilter,
         mode: ReviewMode,
+        api_key: String,
     ) -> Result<Self, GenerationError> {
         let mut parsed_diff = ParsedDiff::parse(diff_text)?;
         parsed_diff.apply_filter(filter)?;
 
-        let client = ClaudeClient::from_env()?;
+        let client = ClaudeClient::new(api_key);
         Ok(Self {
             parsed_diff,
             client,
@@ -266,11 +262,7 @@ pub fn create_sub_steps(
             hunks.push(sliced);
         }
 
-        let priority = match step_response.priority.to_lowercase().as_str() {
-            "critical" => Priority::Critical,
-            "minor" => Priority::Minor,
-            _ => Priority::Normal,
-        };
+        let priority = Priority::parse(&step_response.priority);
 
         sub_steps.push(Step {
             id: format!("{}.{}", base_id, i + 1),

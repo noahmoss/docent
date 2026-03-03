@@ -128,18 +128,6 @@ impl Session {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn add_step(&mut self, step: Step) {
-        self.walkthrough.steps.push(step);
-        self.reviewed_steps.push(false);
-        if let SessionState::Loading { status, .. } = &self.state {
-            self.state = SessionState::Loading {
-                status: status.clone(),
-                steps_received: self.walkthrough.steps.len(),
-            };
-        }
-    }
-
     // --- Navigation ---
 
     /// Returns true if the step actually changed.
@@ -213,11 +201,6 @@ impl Session {
 
     pub fn current_step_data(&self) -> Option<&Step> {
         self.walkthrough.get_step(self.current_step)
-    }
-
-    #[allow(dead_code)]
-    pub fn current_step_data_mut(&mut self) -> Option<&mut Step> {
-        self.walkthrough.steps.get_mut(self.current_step)
     }
 
     pub fn total_diff_lines(&self) -> usize {

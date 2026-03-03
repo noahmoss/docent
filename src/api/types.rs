@@ -11,9 +11,6 @@ pub enum ApiError {
 
     #[error("failed to parse API response: {0}")]
     Parse(String),
-
-    #[error("missing API key - set ANTHROPIC_API_KEY environment variable")]
-    MissingApiKey,
 }
 
 /// Tool schema for Claude to create a walkthrough

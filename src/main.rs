@@ -33,7 +33,9 @@ use constants::{EVENT_POLL_INTERVAL, EVENT_RECV_TIMEOUT, VIEWPORT_HEIGHT_OFFSET}
 use diff::FileFilter;
 use generation::{WalkthroughGenerator, create_sub_steps, format_step_for_rechunk};
 use input::InputHandler;
-use model::{Message, ReviewMode, Step, Walkthrough, mock_walkthrough};
+use model::{Message, ReviewMode, Step, Walkthrough};
+#[cfg(debug_assertions)]
+use model::mock_walkthrough;
 use settings::Settings;
 
 /// Events that can occur in the app
@@ -147,43 +149,38 @@ fn spawn_chat_handler(
 
 fn spawn_rechunk(
     tx: mpsc::Sender<AppEvent>,
+    api_key: String,
     step_index: usize,
     step: Step,
     diff_text: Option<String>,
     mode: ReviewMode,
 ) {
     tokio::spawn(async move {
-        match ClaudeClient::from_env() {
-            Ok(client) => {
-                let step_content = format_step_for_rechunk(&step);
-                let mut prompt = format!(
-                    "Please split this step into smaller sub-steps.\n\n\
-                     ## Step: {}\n\n{}\n\n## Hunks\n\n{}",
-                    step.title, step.summary, step_content
-                );
-                if let Some(diff) = diff_text {
-                    prompt.push_str(&format!(
-                        "\n\nHere is the full diff for context:\n\n{}",
-                        diff
-                    ));
-                }
+        let client = ClaudeClient::new(api_key);
+        let step_content = format_step_for_rechunk(&step);
+        let mut prompt = format!(
+            "Please split this step into smaller sub-steps.\n\n\
+             ## Step: {}\n\n{}\n\n## Hunks\n\n{}",
+            step.title, step.summary, step_content
+        );
+        if let Some(diff) = diff_text {
+            prompt.push_str(&format!(
+                "\n\nHere is the full diff for context:\n\n{}",
+                diff
+            ));
+        }
 
-                match client.rechunk_step(&prompt, mode).await {
-                    Ok(response) => match create_sub_steps(&step, response, &step.id) {
-                        Ok(sub_steps) => {
-                            let _ = tx
-                                .send(AppEvent::RechunkComplete(step_index, sub_steps))
-                                .await;
-                        }
-                        Err(e) => {
-                            let _ = tx.send(AppEvent::RechunkError(e.to_string())).await;
-                        }
-                    },
-                    Err(e) => {
-                        let _ = tx.send(AppEvent::RechunkError(e.to_string())).await;
-                    }
+        match client.rechunk_step(&prompt, mode).await {
+            Ok(response) => match create_sub_steps(&step, response, &step.id) {
+                Ok(sub_steps) => {
+                    let _ = tx
+                        .send(AppEvent::RechunkComplete(step_index, sub_steps))
+                        .await;
                 }
-            }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::RechunkError(e.to_string())).await;
+                }
+            },
             Err(e) => {
                 let _ = tx.send(AppEvent::RechunkError(e.to_string())).await;
             }
@@ -200,6 +197,7 @@ struct Args {
     diff_file: Option<String>,
 
     /// Use mock data instead of generating from a diff
+    #[cfg(debug_assertions)]
     #[arg(long = "mock")]
     use_mock: bool,
 
@@ -221,18 +219,19 @@ struct Args {
 }
 
 async fn read_diff_input(args: &Args) -> io::Result<Option<String>> {
+    #[cfg(debug_assertions)]
     if args.use_mock {
         return Ok(None);
     }
 
     if let Some(input) = &args.diff_file {
-        if github::parse_pr_url(input).is_some() {
+        if github::parse_github_url(input).is_some() {
             let diff = github::fetch_diff(input).await.map_err(io::Error::other)?;
             return Ok(Some(diff));
         }
         if input.starts_with("https://") || input.starts_with("http://") {
             return Err(io::Error::other(format!(
-                "Unsupported URL: {input}\nExpected a GitHub PR URL like https://github.com/owner/repo/pull/123"
+                "Unsupported URL: {input}\nExpected a GitHub URL like:\n  https://github.com/owner/repo/pull/123\n  https://github.com/owner/repo/commit/<sha>\n  https://github.com/owner/repo/compare/base...head"
             )));
         }
         return Ok(Some(std::fs::read_to_string(input)?));
@@ -297,13 +296,20 @@ async fn run_app<B: Backend + Send>(
 ) -> io::Result<()> {
     let mut settings = Settings::load();
 
-    let mut app = if diff_input.is_none() {
-        App::new(mock_walkthrough(), &settings, mode)
-    } else {
+    let mut app = if let Some(diff) = diff_input {
         let mut app = App::setup(&settings, mode);
-        app.session.diff_input = diff_input;
+        app.session.diff_input = Some(diff);
         app.session.diff_filter = filter;
         app
+    } else {
+        #[cfg(debug_assertions)]
+        {
+            App::new(mock_walkthrough(), &settings, mode)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            App::setup(&settings, mode)
+        }
     };
 
     let mut input_handler = InputHandler::new();
@@ -334,6 +340,7 @@ async fn run_app<B: Backend + Send>(
         if let Some((step_index, walkthrough, messages)) = app.session.chat_request.take() {
             spawn_chat_handler(
                 tx.clone(),
+                app.session.api_key_input.clone(),
                 step_index,
                 walkthrough,
                 messages,
@@ -344,6 +351,7 @@ async fn run_app<B: Backend + Send>(
         if let Some((step_index, step, diff_text)) = app.session.rechunk_request.take() {
             spawn_rechunk(
                 tx.clone(),
+                app.session.api_key_input.clone(),
                 step_index,
                 step,
                 diff_text,
@@ -356,14 +364,11 @@ async fn run_app<B: Backend + Send>(
         }
 
         let should_generate = app.session.generation_requested || app.session.retry_requested;
-        if app.session.generation_requested {
-            // If the user entered a new key, propagate it
-            if app.session.api_key_source == settings::ApiKeySource::UserEntry {
-                // Safety: process-scoped, no other threads reading this var
-                unsafe { std::env::set_var("ANTHROPIC_API_KEY", &app.session.api_key_input) };
-                settings.api_key = Some(app.session.api_key_input.clone());
-                let _ = settings.save();
-            }
+        if app.session.generation_requested
+            && app.session.api_key_source == settings::ApiKeySource::UserEntry
+        {
+            settings.api_key = Some(app.session.api_key_input.clone());
+            let _ = settings.save();
         }
         app.session.generation_requested = false;
         app.session.retry_requested = false;
@@ -378,6 +383,7 @@ async fn run_app<B: Backend + Send>(
             app.session.set_loading_status(status.to_string());
             spawn_walkthrough_generation(
                 tx.clone(),
+                app.session.api_key_input.clone(),
                 diff_text,
                 app.session.diff_filter.clone(),
                 app.session.review_mode,

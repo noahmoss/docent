@@ -132,18 +132,6 @@ impl SearchState {
         self.matches.get(self.current)
     }
 
-    /// Check if a given line/column falls within any match
-    #[allow(dead_code)]
-    pub fn match_at(&self, line: usize, col: usize) -> Option<(usize, bool)> {
-        for (idx, m) in self.matches.iter().enumerate() {
-            if m.line == line && col >= m.start && col < m.end {
-                let is_current = idx == self.current;
-                return Some((idx, is_current));
-            }
-        }
-        None
-    }
-
     /// Get match count display string
     pub fn match_count_display(&self) -> String {
         if self.matches.is_empty() {

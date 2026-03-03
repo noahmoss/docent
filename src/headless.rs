@@ -55,12 +55,6 @@ pub async fn run(
         ));
     }
 
-    if source == crate::settings::ApiKeySource::Settings
-        && let Some(key) = &settings.api_key
-    {
-        unsafe { std::env::set_var("ANTHROPIC_API_KEY", key) };
-    }
-
     let mut session = Session::new(Walkthrough { steps: vec![] }, mode);
     session.diff_input = Some(diff_text.clone());
     session.diff_filter = filter.clone();
@@ -97,7 +91,7 @@ pub async fn run(
         status: "Generating...".to_string(),
         steps_received: 0,
     };
-    spawn_generation(tx.clone(), diff_text, filter, mode);
+    spawn_generation(tx.clone(), session.api_key_input.clone(), diff_text, filter, mode);
 
     let mut clients: Vec<(usize, mpsc::Sender<String>)> = Vec::new();
     let mut next_client_id: usize = 0;
@@ -105,11 +99,11 @@ pub async fn run(
     loop {
         // Poll for pending requests from session
         if let Some((step_index, walkthrough, messages)) = session.chat_request.take() {
-            spawn_chat(tx.clone(), step_index, walkthrough, messages, mode);
+            spawn_chat(tx.clone(), session.api_key_input.clone(), step_index, walkthrough, messages, mode);
         }
 
         if let Some((step_index, step, diff_text)) = session.rechunk_request.take() {
-            spawn_rechunk_task(tx.clone(), step_index, step, diff_text, mode);
+            spawn_rechunk_task(tx.clone(), session.api_key_input.clone(), step_index, step, diff_text, mode);
         }
 
         let event = tokio::select! {
@@ -398,12 +392,13 @@ async fn broadcast(clients: &[(usize, mpsc::Sender<String>)], notification: &Not
 
 fn spawn_generation(
     tx: mpsc::Sender<ServerEvent>,
+    api_key: String,
     diff_text: String,
     filter: FileFilter,
     mode: ReviewMode,
 ) {
     tokio::spawn(async move {
-        let event = match WalkthroughGenerator::with_filter(&diff_text, &filter, mode) {
+        let event = match WalkthroughGenerator::with_filter(&diff_text, &filter, mode, api_key) {
             Ok(generator) => match generator.generate().await {
                 Ok(walkthrough) => EngineEvent::GenerationComplete(walkthrough),
                 Err(e) => EngineEvent::GenerationError(e.to_string()),
@@ -416,46 +411,36 @@ fn spawn_generation(
 
 fn spawn_chat(
     tx: mpsc::Sender<ServerEvent>,
+    api_key: String,
     step_index: usize,
     walkthrough: Walkthrough,
     messages: Vec<Message>,
     mode: ReviewMode,
 ) {
     tokio::spawn(async move {
-        match ClaudeClient::from_env() {
-            Ok(client) => {
-                let (chunk_tx, mut chunk_rx) = mpsc::channel::<String>(32);
+        let client = ClaudeClient::new(api_key);
+        let (chunk_tx, mut chunk_rx) = mpsc::channel::<String>(32);
 
-                let tx_chunks = tx.clone();
-                let forward_task = tokio::spawn(async move {
-                    while let Some(chunk) = chunk_rx.recv().await {
-                        let _ = tx_chunks
-                            .send(ServerEvent::Engine(EngineEvent::ChatChunk(
-                                step_index, chunk,
-                            )))
-                            .await;
-                    }
-                });
+        let tx_chunks = tx.clone();
+        let forward_task = tokio::spawn(async move {
+            while let Some(chunk) = chunk_rx.recv().await {
+                let _ = tx_chunks
+                    .send(ServerEvent::Engine(EngineEvent::ChatChunk(
+                        step_index, chunk,
+                    )))
+                    .await;
+            }
+        });
 
-                match client
-                    .chat_streaming(&walkthrough, step_index, &messages, mode, chunk_tx)
-                    .await
-                {
-                    Ok(()) => {
-                        let _ = forward_task.await;
-                        let _ = tx
-                            .send(ServerEvent::Engine(EngineEvent::ChatComplete(step_index)))
-                            .await;
-                    }
-                    Err(e) => {
-                        let _ = tx
-                            .send(ServerEvent::Engine(EngineEvent::ChatError(
-                                step_index,
-                                e.to_string(),
-                            )))
-                            .await;
-                    }
-                }
+        match client
+            .chat_streaming(&walkthrough, step_index, &messages, mode, chunk_tx)
+            .await
+        {
+            Ok(()) => {
+                let _ = forward_task.await;
+                let _ = tx
+                    .send(ServerEvent::Engine(EngineEvent::ChatComplete(step_index)))
+                    .await;
             }
             Err(e) => {
                 let _ = tx
@@ -471,43 +456,34 @@ fn spawn_chat(
 
 fn spawn_rechunk_task(
     tx: mpsc::Sender<ServerEvent>,
+    api_key: String,
     step_index: usize,
     step: Step,
     diff_text: Option<String>,
     mode: ReviewMode,
 ) {
     tokio::spawn(async move {
-        match ClaudeClient::from_env() {
-            Ok(client) => {
-                let step_content = format_step_for_rechunk(&step);
-                let mut prompt = format!(
-                    "Please split this step into smaller sub-steps.\n\n\
-                     ## Step: {}\n\n{}\n\n## Hunks\n\n{}",
-                    step.title, step.summary, step_content
-                );
-                if let Some(diff) = diff_text {
-                    prompt.push_str(&format!(
-                        "\n\nHere is the full diff for context:\n\n{}",
-                        diff
-                    ));
-                }
+        let client = ClaudeClient::new(api_key);
+        let step_content = format_step_for_rechunk(&step);
+        let mut prompt = format!(
+            "Please split this step into smaller sub-steps.\n\n\
+             ## Step: {}\n\n{}\n\n## Hunks\n\n{}",
+            step.title, step.summary, step_content
+        );
+        if let Some(diff) = diff_text {
+            prompt.push_str(&format!(
+                "\n\nHere is the full diff for context:\n\n{}",
+                diff
+            ));
+        }
 
-                match client.rechunk_step(&prompt, mode).await {
-                    Ok(response) => {
-                        let event = match create_sub_steps(&step, response, &step.id) {
-                            Ok(sub_steps) => EngineEvent::RechunkComplete(step_index, sub_steps),
-                            Err(e) => EngineEvent::RechunkError(e.to_string()),
-                        };
-                        let _ = tx.send(ServerEvent::Engine(event)).await;
-                    }
-                    Err(e) => {
-                        let _ = tx
-                            .send(ServerEvent::Engine(EngineEvent::RechunkError(
-                                e.to_string(),
-                            )))
-                            .await;
-                    }
-                }
+        match client.rechunk_step(&prompt, mode).await {
+            Ok(response) => {
+                let event = match create_sub_steps(&step, response, &step.id) {
+                    Ok(sub_steps) => EngineEvent::RechunkComplete(step_index, sub_steps),
+                    Err(e) => EngineEvent::RechunkError(e.to_string()),
+                };
+                let _ = tx.send(ServerEvent::Engine(event)).await;
             }
             Err(e) => {
                 let _ = tx

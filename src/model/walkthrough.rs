@@ -111,6 +111,7 @@ impl Walkthrough {
     }
 }
 
+#[cfg(debug_assertions)]
 pub fn mock_walkthrough() -> Walkthrough {
     let summary1 = "Introduces a new `UserSession` struct to track authenticated user sessions. \
         This is the **foundation** for the session management system, storing `user_id`, \

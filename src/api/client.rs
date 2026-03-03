@@ -26,11 +26,6 @@ impl ClaudeClient {
         }
     }
 
-    pub fn from_env() -> Result<Self, ApiError> {
-        let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| ApiError::MissingApiKey)?;
-        Ok(Self::new(api_key))
-    }
-
     async fn tool_use_request<T: DeserializeOwned>(
         &self,
         tool_schema: &str,

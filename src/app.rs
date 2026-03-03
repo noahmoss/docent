@@ -1,6 +1,8 @@
 use crate::editor::Editor;
 use crate::layout::{Layout, Pane};
-use crate::model::{ReviewMode, Walkthrough};
+use crate::model::ReviewMode;
+#[cfg(debug_assertions)]
+use crate::model::Walkthrough;
 use crate::scroll::{ChatScroll, DiffScroll};
 use crate::search::SearchState;
 use crate::session::Session;
@@ -27,6 +29,7 @@ pub struct App<'a> {
 }
 
 impl<'a> App<'a> {
+    #[cfg(debug_assertions)]
     pub fn new(walkthrough: Walkthrough, settings: &Settings, mode: ReviewMode) -> Self {
         Self {
             session: Session::new(walkthrough, mode),
