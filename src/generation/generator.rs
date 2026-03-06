@@ -2,7 +2,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::api::{
-    ApiError, ClientStreamEvent, ClaudeClient, RechunkResponse, WalkthroughStepResponse,
+    ApiError, ClientStreamEvent, ClaudeClient, RechunkResponse, TokenUsage, WalkthroughStepResponse,
 };
 use crate::diff::{DiffParseError, FileFilter, ParsedDiff};
 use crate::model::{CommitInfo, Hunk, Message, Priority, ReviewMode, Step};
@@ -60,7 +60,7 @@ impl WalkthroughGenerator {
     pub async fn generate_streaming(
         self,
         event_tx: mpsc::Sender<StreamEvent>,
-    ) -> Result<(), GenerationError> {
+    ) -> Result<TokenUsage, GenerationError> {
         let prompt = self.build_prompt();
 
         let WalkthroughGenerator {
@@ -93,11 +93,11 @@ impl WalkthroughGenerator {
             }
         }
 
-        api_task
+        let usage = api_task
             .await
             .map_err(|e| GenerationError::Api(ApiError::Parse(e.to_string())))??;
 
-        Ok(())
+        Ok(usage)
     }
 
     fn build_prompt(&self) -> String {

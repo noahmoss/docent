@@ -1,5 +1,38 @@
+use std::ops::{Add, AddAssign};
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct TokenUsage {
+    pub input_tokens:  u32,
+    pub output_tokens: u32,
+}
+
+impl TokenUsage {
+    pub fn cost_usd(&self) -> f64 {
+        // claude-sonnet-4-20250514: $3.00/1M input, $15.00/1M output
+        (self.input_tokens as f64 * 3.0 + self.output_tokens as f64 * 15.0) / 1_000_000.0
+    }
+}
+
+impl Add for TokenUsage {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            input_tokens:  self.input_tokens + other.input_tokens,
+            output_tokens: self.output_tokens + other.output_tokens,
+        }
+    }
+}
+
+impl AddAssign for TokenUsage {
+    fn add_assign(&mut self, other: Self) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ApiError {

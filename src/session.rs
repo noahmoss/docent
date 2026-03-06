@@ -1,3 +1,4 @@
+use crate::api::TokenUsage;
 use crate::diff::FileFilter;
 use crate::model::{CommitInfo, Message, ReviewMode, Step, Walkthrough};
 use crate::settings::ApiKeySource;
@@ -39,6 +40,7 @@ pub struct Session {
     pub diff_filter: FileFilter,
     pub api_key_input: String,
     pub api_key_source: ApiKeySource,
+    pub token_usage: TokenUsage,
 }
 
 impl Session {
@@ -63,6 +65,7 @@ impl Session {
             diff_filter: FileFilter::default(),
             api_key_input: String::new(),
             api_key_source: ApiKeySource::Missing,
+            token_usage: TokenUsage::default(),
         }
     }
 
@@ -86,7 +89,12 @@ impl Session {
             diff_filter: FileFilter::default(),
             api_key_input,
             api_key_source,
+            token_usage: TokenUsage::default(),
         }
+    }
+
+    pub fn add_usage(&mut self, usage: TokenUsage) {
+        self.token_usage += usage;
     }
 
     // --- State transitions ---

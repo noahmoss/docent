@@ -266,8 +266,34 @@ fn help(key: &str, action: &str) -> [Span<'static>; 2] {
     ]
 }
 
+fn format_token_count(n: u32) -> String {
+    if n >= 1000 {
+        format!("{:.1}k", n as f64 / 1000.0)
+    } else {
+        format!("{}", n)
+    }
+}
+
 fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
     let is_zoomed = app.layout.is_zoomed();
+
+    let usage = &app.session.token_usage;
+    let usage_text = if usage.input_tokens > 0 || usage.output_tokens > 0 {
+        let cost = usage.cost_usd();
+        let cost_str = if cost < 0.01 {
+            "<$0.01".to_string()
+        } else {
+            format!("~${:.2}", cost)
+        };
+        Some(format!(
+            " ↑{} ↓{} {} ",
+            format_token_count(usage.input_tokens),
+            format_token_count(usage.output_tokens),
+            cost_str,
+        ))
+    } else {
+        None
+    };
 
     let help_text = if app.quit_pending {
         Line::from(Span::styled(
@@ -388,7 +414,22 @@ fn render_help_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    let paragraph = Paragraph::new(help_text);
+    if let Some(usage_str) = usage_text {
+        let usage_width = usage_str.len() as u16;
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(1),
+                Constraint::Length(usage_width),
+            ])
+            .split(area);
 
-    frame.render_widget(paragraph, area);
+        frame.render_widget(Paragraph::new(help_text), chunks[0]);
+        frame.render_widget(
+            Paragraph::new(Span::styled(usage_str, Style::default().fg(Color::DarkGray))),
+            chunks[1],
+        );
+    } else {
+        frame.render_widget(Paragraph::new(help_text), area);
+    }
 }

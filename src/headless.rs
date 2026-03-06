@@ -6,7 +6,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
-use crate::api::ClaudeClient;
+use crate::api::{ClaudeClient, TokenUsage};
 use crate::diff::FileFilter;
 use crate::generation::{StreamEvent, WalkthroughGenerator, create_sub_steps, format_step_for_rechunk};
 use crate::model::{CommitInfo, Message, ReviewMode, Step, Walkthrough};
@@ -20,13 +20,13 @@ use crate::settings::Settings;
 use super::DiffInput;
 
 enum EngineEvent {
-    GenerationComplete,
+    GenerationComplete(TokenUsage),
     GenerationError(String),
     StepReady(Step),
     ChatChunk(usize, String),
-    ChatComplete(usize),
+    ChatComplete(usize, TokenUsage),
     ChatError(usize, String),
-    RechunkComplete(usize, Vec<Step>),
+    RechunkComplete(usize, Vec<Step>, TokenUsage),
     RechunkError(String),
 }
 
@@ -330,7 +330,8 @@ fn handle_engine_event(session: &mut Session, event: EngineEvent) -> Vec<Notific
     let mut notifications = Vec::new();
 
     match event {
-        EngineEvent::GenerationComplete => {
+        EngineEvent::GenerationComplete(usage) => {
+            session.add_usage(usage);
             if session.walkthrough.steps.is_empty() {
                 session.generation_in_progress = false;
                 let msg = "Generation completed but no steps were produced".to_string();
@@ -375,7 +376,8 @@ fn handle_engine_event(session: &mut Session, event: EngineEvent) -> Vec<Notific
             session.receive_chat_chunk(step_index, chunk.clone());
             notifications.push(Notification::chat_chunk(step_index, &chunk));
         }
-        EngineEvent::ChatComplete(step_index) => {
+        EngineEvent::ChatComplete(step_index, usage) => {
+            session.add_usage(usage);
             session.receive_chat_complete(step_index);
             notifications.push(Notification::chat_complete(step_index));
         }
@@ -383,7 +385,8 @@ fn handle_engine_event(session: &mut Session, event: EngineEvent) -> Vec<Notific
             session.receive_chat_error(step_index, error.clone());
             notifications.push(Notification::error(&error));
         }
-        EngineEvent::RechunkComplete(step_index, sub_steps) => {
+        EngineEvent::RechunkComplete(step_index, sub_steps, usage) => {
+            session.add_usage(usage);
             session.receive_rechunk_complete(step_index, sub_steps);
             notifications.push(Notification::rechunk_complete(
                 &session.walkthrough.steps,
@@ -445,10 +448,10 @@ fn spawn_generation(
                 });
 
                 match generator.generate_streaming(event_tx).await {
-                    Ok(()) => {
+                    Ok(usage) => {
                         let _ = forward_task.await;
                         let _ = tx
-                            .send(ServerEvent::Engine(EngineEvent::GenerationComplete))
+                            .send(ServerEvent::Engine(EngineEvent::GenerationComplete(usage)))
                             .await;
                     }
                     Err(e) => {
@@ -498,10 +501,10 @@ fn spawn_chat(
             .chat_streaming(&walkthrough, step_index, &messages, mode, chunk_tx)
             .await
         {
-            Ok(()) => {
+            Ok(usage) => {
                 let _ = forward_task.await;
                 let _ = tx
-                    .send(ServerEvent::Engine(EngineEvent::ChatComplete(step_index)))
+                    .send(ServerEvent::Engine(EngineEvent::ChatComplete(step_index, usage)))
                     .await;
             }
             Err(e) => {
@@ -540,9 +543,9 @@ fn spawn_rechunk_task(
         }
 
         match client.rechunk_step(&prompt, mode).await {
-            Ok(response) => {
+            Ok((response, usage)) => {
                 let event = match create_sub_steps(&step, response, &step.id) {
-                    Ok(sub_steps) => EngineEvent::RechunkComplete(step_index, sub_steps),
+                    Ok(sub_steps) => EngineEvent::RechunkComplete(step_index, sub_steps, usage),
                     Err(e) => EngineEvent::RechunkError(e.to_string()),
                 };
                 let _ = tx.send(ServerEvent::Engine(event)).await;

@@ -5,7 +5,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::api::types::{
-    ApiError, RECHUNK_STEP_TOOL, RechunkResponse, WalkthroughStepResponse,
+    ApiError, RECHUNK_STEP_TOOL, RechunkResponse, TokenUsage, WalkthroughStepResponse,
     chat_system_prompt, rechunk_system_prompt, walkthrough_system_prompt,
 };
 use crate::model::{Message, MessageRole, ReviewMode, Walkthrough};
@@ -36,7 +36,7 @@ impl ClaudeClient {
         tool_name: &str,
         system_prompt: &str,
         user_prompt: &str,
-    ) -> Result<T, ApiError> {
+    ) -> Result<(T, TokenUsage), ApiError> {
         let tool: serde_json::Value = serde_json::from_str(tool_schema)
             .map_err(|e| ApiError::Parse(format!("invalid tool schema: {}", e)))?;
 
@@ -78,13 +78,19 @@ impl ClaudeClient {
             .await
             .map_err(|e| ApiError::Parse(format!("failed to parse response: {}", e)))?;
 
+        let usage = api_response.usage.map(|u| TokenUsage {
+            input_tokens:  u.input_tokens,
+            output_tokens: u.output_tokens,
+        }).unwrap_or_default();
+
         for content in api_response.content {
             if content.content_type == "tool_use"
                 && content.name.as_deref() == Some(tool_name)
                 && let Some(input) = content.input
             {
-                return serde_json::from_value(input)
-                    .map_err(|e| ApiError::Parse(format!("failed to parse tool input: {}", e)));
+                let parsed = serde_json::from_value(input)
+                    .map_err(|e| ApiError::Parse(format!("failed to parse tool input: {}", e)))?;
+                return Ok((parsed, usage));
             }
         }
 
@@ -95,7 +101,7 @@ impl ClaudeClient {
         &self,
         prompt: &str,
         mode: ReviewMode,
-    ) -> Result<RechunkResponse, ApiError> {
+    ) -> Result<(RechunkResponse, TokenUsage), ApiError> {
         self.tool_use_request(
             RECHUNK_STEP_TOOL,
             "rechunk_step",
@@ -113,7 +119,7 @@ impl ClaudeClient {
         diff_prompt: &str,
         mode: ReviewMode,
         event_tx: mpsc::Sender<ClientStreamEvent>,
-    ) -> Result<(), ApiError> {
+    ) -> Result<TokenUsage, ApiError> {
         let prefill = r#"{"steps": ["#;
 
         let request_body = json!({
@@ -156,6 +162,7 @@ impl ClaudeClient {
         let mut sse_buffer = String::new();
         let mut json_buffer = prefill.to_string();
         let mut step_extractor = StepExtractor::new();
+        let mut usage = TokenUsage::default();
 
         let debug = std::env::var("DOCENT_DEBUG").is_ok();
         let mut debug_log = if debug {
@@ -183,6 +190,11 @@ impl ClaudeClient {
             while let Some(event_end) = sse_buffer.find("\n\n") {
                 let event_data = sse_buffer[..event_end].to_string();
                 sse_buffer = sse_buffer[event_end + 2..].to_string();
+
+                if let Some((input_delta, output_delta)) = parse_sse_usage(&event_data) {
+                    usage.input_tokens += input_delta;
+                    usage.output_tokens += output_delta;
+                }
 
                 if let Some(text) = parse_sse_text_delta(&event_data) {
                     json_buffer.push_str(&text);
@@ -227,7 +239,7 @@ impl ClaudeClient {
             );
         }
 
-        Ok(())
+        Ok(usage)
     }
 
     /// Chat about a specific step in the walkthrough with streaming.
@@ -240,7 +252,7 @@ impl ClaudeClient {
         messages: &[Message],
         mode: ReviewMode,
         chunk_tx: mpsc::Sender<String>,
-    ) -> Result<(), ApiError> {
+    ) -> Result<TokenUsage, ApiError> {
         let step = walkthrough
             .get_step(step_index)
             .ok_or_else(|| ApiError::Parse("invalid step index".to_string()))?;
@@ -318,6 +330,7 @@ impl ClaudeClient {
         // Process SSE stream
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut usage = TokenUsage::default();
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result?;
@@ -328,16 +341,43 @@ impl ClaudeClient {
                 let event_data = buffer[..event_end].to_string();
                 buffer = buffer[event_end + 2..].to_string();
 
-                // Parse SSE event
+                if let Some((input_delta, output_delta)) = parse_sse_usage(&event_data) {
+                    usage.input_tokens += input_delta;
+                    usage.output_tokens += output_delta;
+                }
+
                 if let Some(text) = parse_sse_text_delta(&event_data) {
-                    // Send chunk, ignore errors (receiver may have closed)
                     let _ = chunk_tx.send(text).await;
                 }
             }
         }
 
-        Ok(())
+        Ok(usage)
     }
+}
+
+/// Parse SSE event data to extract token usage deltas.
+/// Returns `(input_delta, output_delta)`.
+/// Handles both `message_start` (input + output) and `message_delta` (output only).
+fn parse_sse_usage(event: &str) -> Option<(u32, u32)> {
+    for line in event.lines() {
+        let data = line.strip_prefix("data: ")?;
+        let json: serde_json::Value = serde_json::from_str(data).ok()?;
+        match json.get("type")?.as_str()? {
+            "message_start" => {
+                let usage = json.get("message")?.get("usage")?;
+                let input = usage.get("input_tokens")?.as_u64()? as u32;
+                let output = usage.get("output_tokens")?.as_u64()? as u32;
+                return Some((input, output));
+            }
+            "message_delta" => {
+                let output = json.get("usage")?.get("output_tokens")?.as_u64()? as u32;
+                return Some((0, output));
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Parse SSE event data to extract text delta content
@@ -646,6 +686,13 @@ impl StepExtractor {
 #[derive(Debug, Deserialize)]
 struct ApiResponse {
     content: Vec<ContentBlock>,
+    usage:   Option<ApiUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiUsage {
+    input_tokens:  u32,
+    output_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]

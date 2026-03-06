@@ -27,7 +27,7 @@ use crossterm::{
 use ratatui::prelude::*;
 use tokio::sync::mpsc;
 
-use api::ClaudeClient;
+use api::{ClaudeClient, TokenUsage};
 use app::App;
 use constants::{EVENT_POLL_INTERVAL, EVENT_RECV_TIMEOUT, VIEWPORT_HEIGHT_OFFSET};
 use diff::FileFilter;
@@ -40,13 +40,13 @@ use settings::Settings;
 
 enum AppEvent {
     Terminal(Event),
-    GenerationComplete,
+    GenerationComplete(TokenUsage),
     GenerationError(String),
     StepReady(Step),
     ChatChunk(usize, String),
-    ChatComplete(usize),
+    ChatComplete(usize, TokenUsage),
     ChatError(usize, String),
-    RechunkComplete(usize, Vec<Step>),
+    RechunkComplete(usize, Vec<Step>, TokenUsage),
     RechunkError(String),
 }
 
@@ -73,9 +73,9 @@ fn spawn_walkthrough_generation(
                 });
 
                 match generator.generate_streaming(event_tx).await {
-                    Ok(()) => {
+                    Ok(usage) => {
                         let _ = forward_task.await;
-                        let _ = tx.send(AppEvent::GenerationComplete).await;
+                        let _ = tx.send(AppEvent::GenerationComplete(usage)).await;
                     }
                     Err(e) => {
                         let _ = tx.send(AppEvent::GenerationError(e.to_string())).await;
@@ -140,9 +140,9 @@ fn spawn_chat_handler(
             .chat_streaming(&walkthrough, step_index, &messages, mode, chunk_tx)
             .await
         {
-            Ok(()) => {
+            Ok(usage) => {
                 let _ = forward_task.await;
-                let _ = tx.send(AppEvent::ChatComplete(step_index)).await;
+                let _ = tx.send(AppEvent::ChatComplete(step_index, usage)).await;
             }
             Err(e) => {
                 let _ = tx
@@ -177,10 +177,10 @@ fn spawn_rechunk(
         }
 
         match client.rechunk_step(&prompt, mode).await {
-            Ok(response) => match create_sub_steps(&step, response, &step.id) {
+            Ok((response, usage)) => match create_sub_steps(&step, response, &step.id) {
                 Ok(sub_steps) => {
                     let _ = tx
-                        .send(AppEvent::RechunkComplete(step_index, sub_steps))
+                        .send(AppEvent::RechunkComplete(step_index, sub_steps, usage))
                         .await;
                 }
                 Err(e) => {
@@ -486,7 +486,8 @@ fn handle_app_event<B: Backend>(
             input_handler.handle_mouse(mouse, app, terminal.size()?);
         }
         AppEvent::Terminal(_) => {}
-        AppEvent::GenerationComplete => {
+        AppEvent::GenerationComplete(usage) => {
+            app.session.add_usage(usage);
             if app.session.walkthrough.steps.is_empty() {
                 app.session.generation_in_progress = false;
                 app.session.set_error(
@@ -512,13 +513,15 @@ fn handle_app_event<B: Backend>(
         AppEvent::ChatChunk(step_index, chunk) => {
             app.session.receive_chat_chunk(step_index, chunk);
         }
-        AppEvent::ChatComplete(step_index) => {
+        AppEvent::ChatComplete(step_index, usage) => {
+            app.session.add_usage(usage);
             app.session.receive_chat_complete(step_index);
         }
         AppEvent::ChatError(step_index, error) => {
             app.session.receive_chat_error(step_index, error);
         }
-        AppEvent::RechunkComplete(step_index, sub_steps) => {
+        AppEvent::RechunkComplete(step_index, sub_steps, usage) => {
+            app.session.add_usage(usage);
             app.receive_rechunk_complete(step_index, sub_steps);
         }
         AppEvent::RechunkError(error) => {
