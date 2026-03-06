@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Borders, List, ListItem},
 };
@@ -23,7 +23,7 @@ fn is_last_child(steps: &[Step], index: usize) -> bool {
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let steps = &app.session.walkthrough.steps;
 
-    let items: Vec<ListItem> = steps
+    let mut items: Vec<ListItem> = steps
         .iter()
         .enumerate()
         .map(|(i, step)| {
@@ -103,13 +103,37 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let title = format!(
-        " Steps ({}/{}) · {}/{} lines ",
-        app.session.current_step + 1,
-        app.session.walkthrough.step_count(),
-        app.session.reviewed_diff_lines(),
-        app.session.total_diff_lines(),
-    );
+    if app.session.generation_in_progress {
+        let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let spinner_idx = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() / 100)
+            .unwrap_or(0) as usize)
+            % spinner_frames.len();
+
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("{} ", spinner_frames[spinner_idx]),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Generating...", Style::default().fg(Color::DarkGray)),
+        ])));
+    }
+
+    let step_count = app.session.walkthrough.step_count();
+    let title = if step_count == 0 {
+        " Steps ".to_string()
+    } else {
+        format!(
+            " Steps ({}/{}) · {}/{} lines ",
+            app.session.current_step + 1,
+            step_count,
+            app.session.reviewed_diff_lines(),
+            app.session.total_diff_lines(),
+        )
+    };
 
     let is_active = app.layout.active_pane == Pane::Minimap;
     let borders = if app.layout.is_zoomed() {

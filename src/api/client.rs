@@ -5,10 +5,14 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::api::types::{
-    ApiError, CREATE_WALKTHROUGH_TOOL, CreateWalkthroughResponse, RECHUNK_STEP_TOOL,
-    RechunkResponse, chat_system_prompt, rechunk_system_prompt, walkthrough_system_prompt,
+    ApiError, RECHUNK_STEP_TOOL, RechunkResponse, WalkthroughStepResponse,
+    chat_system_prompt, rechunk_system_prompt, walkthrough_system_prompt,
 };
 use crate::model::{Message, MessageRole, ReviewMode, Walkthrough};
+
+pub enum ClientStreamEvent {
+    StepComplete(WalkthroughStepResponse),
+}
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const MODEL: &str = "claude-sonnet-4-20250514";
@@ -87,20 +91,6 @@ impl ClaudeClient {
         Err(ApiError::Parse("no tool_use block found in response".to_string()))
     }
 
-    pub async fn generate_walkthrough(
-        &self,
-        diff_prompt: &str,
-        mode: ReviewMode,
-    ) -> Result<CreateWalkthroughResponse, ApiError> {
-        self.tool_use_request(
-            CREATE_WALKTHROUGH_TOOL,
-            "create_walkthrough",
-            walkthrough_system_prompt(mode),
-            diff_prompt,
-        )
-        .await
-    }
-
     pub async fn rechunk_step(
         &self,
         prompt: &str,
@@ -113,6 +103,131 @@ impl ClaudeClient {
             prompt,
         )
         .await
+    }
+
+    /// Stream the walkthrough generation, sending complete steps as they're detected.
+    /// Uses text mode with assistant prefill for true token-by-token streaming
+    /// (tool_use streaming batches the entire response before streaming tokens).
+    pub async fn generate_walkthrough_streaming(
+        &self,
+        diff_prompt: &str,
+        mode: ReviewMode,
+        event_tx: mpsc::Sender<ClientStreamEvent>,
+    ) -> Result<(), ApiError> {
+        let prefill = r#"{"steps": ["#;
+
+        let request_body = json!({
+            "model": MODEL,
+            "max_tokens": 4096,
+            "system": walkthrough_system_prompt(mode),
+            "stream": true,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": diff_prompt
+                },
+                {
+                    "role": "assistant",
+                    "content": prefill
+                }
+            ]
+        });
+
+        let response = self
+            .client
+            .post(API_URL)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(ApiError::ApiResponse {
+                status: status.as_u16(),
+                message: body,
+            });
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut sse_buffer = String::new();
+        let mut json_buffer = prefill.to_string();
+        let mut step_extractor = StepExtractor::new();
+
+        let debug = std::env::var("DOCENT_DEBUG").is_ok();
+        let mut debug_log = if debug {
+            std::fs::File::create("/tmp/docent-stream.log").ok()
+        } else {
+            None
+        };
+        let start = std::time::Instant::now();
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result?;
+            let chunk_str = String::from_utf8_lossy(&chunk);
+            if let Some(ref mut f) = debug_log {
+                use std::io::Write;
+                let _ = writeln!(
+                    f,
+                    "[{:.1}s] CHUNK len={} sse_buf_before={}",
+                    start.elapsed().as_secs_f64(),
+                    chunk_str.len(),
+                    sse_buffer.len(),
+                );
+            }
+            sse_buffer.push_str(&chunk_str);
+
+            while let Some(event_end) = sse_buffer.find("\n\n") {
+                let event_data = sse_buffer[..event_end].to_string();
+                sse_buffer = sse_buffer[event_end + 2..].to_string();
+
+                if let Some(text) = parse_sse_text_delta(&event_data) {
+                    json_buffer.push_str(&text);
+                    let steps = step_extractor.feed(&json_buffer);
+                    if let Some(ref mut f) = debug_log {
+                        use std::io::Write;
+                        let _ = writeln!(
+                            f,
+                            "[{:.1}s] FEED buf={} scan={} state={} found={}",
+                            start.elapsed().as_secs_f64(),
+                            json_buffer.len(),
+                            step_extractor.scan_pos,
+                            step_extractor.state_name(),
+                            steps.len(),
+                        );
+                    }
+                    for step in steps {
+                        if let Some(ref mut f) = debug_log {
+                            use std::io::Write;
+                            let _ = writeln!(
+                                f,
+                                "[{:.1}s] EMIT step: {}",
+                                start.elapsed().as_secs_f64(),
+                                step.title,
+                            );
+                        }
+                        let _ = event_tx.send(ClientStreamEvent::StepComplete(step)).await;
+                    }
+                }
+            }
+        }
+
+        if let Some(ref mut f) = debug_log {
+            use std::io::Write;
+            let _ = writeln!(
+                f,
+                "[{:.1}s] DONE: buf={} scan={} state={}",
+                start.elapsed().as_secs_f64(),
+                json_buffer.len(),
+                step_extractor.scan_pos,
+                step_extractor.state_name(),
+            );
+        }
+
+        Ok(())
     }
 
     /// Chat about a specific step in the walkthrough with streaming.
@@ -227,22 +342,305 @@ impl ClaudeClient {
 
 /// Parse SSE event data to extract text delta content
 fn parse_sse_text_delta(event: &str) -> Option<String> {
-    // Look for data line
     for line in event.lines() {
-        if let Some(data) = line.strip_prefix("data: ") {
-            // Parse JSON
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                // Check for content_block_delta with text_delta
-                if json.get("type")?.as_str()? == "content_block_delta" {
-                    let delta = json.get("delta")?;
-                    if delta.get("type")?.as_str()? == "text_delta" {
-                        return delta.get("text")?.as_str().map(String::from);
-                    }
-                }
+        if let Some(data) = line.strip_prefix("data: ")
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(data)
+            && json.get("type")?.as_str()? == "content_block_delta"
+        {
+            let delta = json.get("delta")?;
+            if delta.get("type")?.as_str()? == "text_delta" {
+                return delta.get("text")?.as_str().map(String::from);
             }
         }
     }
     None
+}
+
+#[allow(dead_code)]
+/// Parse SSE event data to extract input_json_delta content (for streaming tool_use)
+fn parse_sse_input_json_delta(event: &str) -> Option<String> {
+    for line in event.lines() {
+        if let Some(data) = line.strip_prefix("data: ")
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(data)
+            && json.get("type")?.as_str()? == "content_block_delta"
+        {
+            let delta = json.get("delta")?;
+            if delta.get("type")?.as_str()? == "input_json_delta" {
+                return delta.get("partial_json")?.as_str().map(String::from);
+            }
+        }
+    }
+    None
+}
+
+#[allow(dead_code)]
+struct TitleExtractor {
+    scan_pos:     usize,
+    in_string:    bool,
+    escape_next:  bool,
+    titles_found: usize,
+}
+
+#[allow(dead_code)]
+impl TitleExtractor {
+    fn new() -> Self {
+        Self {
+            scan_pos:     0,
+            in_string:    false,
+            escape_next:  false,
+            titles_found: 0,
+        }
+    }
+
+    fn feed(&mut self, buffer: &str) -> Vec<String> {
+        let mut titles = Vec::new();
+        let bytes = buffer.as_bytes();
+
+        while self.scan_pos < bytes.len() {
+            if self.escape_next {
+                self.escape_next = false;
+                self.scan_pos += 1;
+                continue;
+            }
+
+            let ch = bytes[self.scan_pos];
+
+            if self.in_string {
+                if ch == b'\\' {
+                    self.escape_next = true;
+                } else if ch == b'"' {
+                    self.in_string = false;
+                }
+                self.scan_pos += 1;
+                continue;
+            }
+
+            if ch == b'"' {
+                // Check if this starts a "title" key
+                if buffer[self.scan_pos..].starts_with("\"title\"") {
+                    let after_key = self.scan_pos + 7;
+                    if let Some((value, end_pos)) = extract_json_string_value(buffer, after_key) {
+                        titles.push(value);
+                        self.titles_found += 1;
+                        self.scan_pos = end_pos;
+                        continue;
+                    }
+                    // Value not complete yet — stop and retry on next feed
+                    break;
+                }
+                // Some other string — advance past it
+                self.in_string = true;
+                self.scan_pos += 1;
+                continue;
+            }
+
+            self.scan_pos += 1;
+        }
+
+        titles
+    }
+}
+
+#[allow(dead_code)]
+fn extract_json_string_value(buffer: &str, from: usize) -> Option<(String, usize)> {
+    let bytes = buffer.as_bytes();
+    let mut i = from;
+
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= bytes.len() || bytes[i] != b':' {
+        return None;
+    }
+    i += 1;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= bytes.len() || bytes[i] != b'"' {
+        return None;
+    }
+    i += 1;
+
+    let string_start = i;
+    let mut escape = false;
+    while i < bytes.len() {
+        if escape {
+            escape = false;
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'\\' {
+            escape = true;
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            let raw = &buffer[string_start..i];
+            let json_str = format!("\"{}\"", raw);
+            let value = serde_json::from_str::<String>(&json_str).ok()?;
+            return Some((value, i + 1));
+        }
+        i += 1;
+    }
+
+    None
+}
+
+/// Detects complete step JSON objects within the streaming `steps` array.
+/// Tracks brace depth to find complete `{...}` objects, respecting string boundaries.
+struct StepExtractor {
+    scan_pos:    usize,
+    state:       StepExtractorState,
+    brace_depth: i32,
+    in_string:   bool,
+    escape_next: bool,
+    obj_start:   Option<usize>,
+}
+
+enum StepExtractorState {
+    Initial,
+    FoundStepsKey,
+    InStepsArray,
+    Done,
+}
+
+impl StepExtractor {
+    fn new() -> Self {
+        Self {
+            scan_pos:    0,
+            state:       StepExtractorState::Initial,
+            brace_depth: 0,
+            in_string:   false,
+            escape_next: false,
+            obj_start:   None,
+        }
+    }
+
+    fn state_name(&self) -> &'static str {
+        match self.state {
+            StepExtractorState::Initial => "Initial",
+            StepExtractorState::FoundStepsKey => "FoundStepsKey",
+            StepExtractorState::InStepsArray => "InStepsArray",
+            StepExtractorState::Done => "Done",
+        }
+    }
+
+    fn feed(&mut self, buffer: &str) -> Vec<WalkthroughStepResponse> {
+        let mut results = Vec::new();
+        let bytes = buffer.as_bytes();
+
+        while self.scan_pos < bytes.len() {
+            let ch = bytes[self.scan_pos];
+
+            match self.state {
+                StepExtractorState::Initial => {
+                    if self.escape_next {
+                        self.escape_next = false;
+                        self.scan_pos += 1;
+                        continue;
+                    }
+                    if self.in_string {
+                        if ch == b'\\' {
+                            self.escape_next = true;
+                        } else if ch == b'"' {
+                            self.in_string = false;
+                        }
+                        self.scan_pos += 1;
+                        continue;
+                    }
+                    if ch == b'"' {
+                        let remaining = &buffer[self.scan_pos..];
+                        if remaining.starts_with("\"steps\"") {
+                            self.state = StepExtractorState::FoundStepsKey;
+                            self.scan_pos += 7;
+                            continue;
+                        }
+                        if remaining.len() < 7 {
+                            // Not enough data to determine if this is "steps" — wait
+                            break;
+                        }
+                        self.in_string = true;
+                    }
+                    self.scan_pos += 1;
+                }
+                StepExtractorState::FoundStepsKey => {
+                    if ch == b'[' {
+                        self.state = StepExtractorState::InStepsArray;
+                        self.brace_depth = 0;
+                        self.in_string = false;
+                        self.escape_next = false;
+                        self.obj_start = None;
+                        self.scan_pos += 1;
+                        continue;
+                    }
+                    if !ch.is_ascii_whitespace() && ch != b':' {
+                        // Not what we expected; go back to scanning
+                        self.state = StepExtractorState::Initial;
+                        continue;
+                    }
+                    self.scan_pos += 1;
+                }
+                StepExtractorState::InStepsArray => {
+                    if self.escape_next {
+                        self.escape_next = false;
+                        self.scan_pos += 1;
+                        continue;
+                    }
+                    if self.in_string {
+                        if ch == b'\\' {
+                            self.escape_next = true;
+                        } else if ch == b'"' {
+                            self.in_string = false;
+                        }
+                        self.scan_pos += 1;
+                        continue;
+                    }
+
+                    match ch {
+                        b'"' => {
+                            self.in_string = true;
+                            self.scan_pos += 1;
+                        }
+                        b'{' => {
+                            if self.brace_depth == 0 {
+                                self.obj_start = Some(self.scan_pos);
+                            }
+                            self.brace_depth += 1;
+                            self.scan_pos += 1;
+                        }
+                        b'}' => {
+                            self.brace_depth -= 1;
+                            self.scan_pos += 1;
+                            if self.brace_depth == 0
+                                && let Some(start) = self.obj_start.take()
+                            {
+                                let obj_str = &buffer[start..self.scan_pos];
+                                if let Ok(step) =
+                                    serde_json::from_str::<WalkthroughStepResponse>(obj_str)
+                                {
+                                    results.push(step);
+                                }
+                            }
+                        }
+                        b']' => {
+                            if self.brace_depth == 0 {
+                                self.state = StepExtractorState::Done;
+                            }
+                            self.scan_pos += 1;
+                        }
+                        _ => {
+                            self.scan_pos += 1;
+                        }
+                    }
+                }
+                StepExtractorState::Done => {
+                    break;
+                }
+            }
+        }
+
+        results
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,4 +656,135 @@ struct ContentBlock {
     input: Option<serde_json::Value>,
     #[allow(dead_code)]
     text: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_extractor_finds_titles() {
+        let mut extractor = TitleExtractor::new();
+
+        let json = r#"{"steps": [{"title": "Add model", "summary": "s""#;
+        let titles = extractor.feed(json);
+        assert_eq!(titles, vec!["Add model"]);
+
+        let json2 = format!(
+            r#"{}, "priority": "normal", "hunk_indices": [1]}}, {{"title": "Update tests", "summary": "t"}}]}}"#,
+            json
+        );
+        let titles2 = extractor.feed(&json2);
+        assert_eq!(titles2, vec!["Update tests"]);
+        assert_eq!(extractor.titles_found, 2);
+    }
+
+    #[test]
+    fn title_extractor_ignores_title_in_strings() {
+        let mut extractor = TitleExtractor::new();
+        // "title" appears inside the summary value — should NOT be extracted
+        let json = r#"{"steps": [{"title": "Real title", "summary": "the \"title\" field matters"}]}"#;
+        let titles = extractor.feed(json);
+        assert_eq!(titles, vec!["Real title"]);
+    }
+
+    #[test]
+    fn title_extractor_handles_escaped_quotes() {
+        let mut extractor = TitleExtractor::new();
+        let json = r#"{"steps": [{"title": "Fix \"quote\" issue", "summary": "s"}]}"#;
+        let titles = extractor.feed(json);
+        assert_eq!(titles, vec![r#"Fix "quote" issue"#]);
+    }
+
+    #[test]
+    fn title_extractor_incremental_feed() {
+        let mut extractor = TitleExtractor::new();
+
+        // Title value not yet complete
+        let partial = r#"{"steps": [{"title": "First st"#;
+        let titles = extractor.feed(partial);
+        assert!(titles.is_empty());
+
+        // Now the title string closes
+        let full = format!(r#"{}ep", "summary": "desc""#, partial);
+        let titles = extractor.feed(&full);
+        assert_eq!(titles, vec!["First step"]);
+    }
+
+    #[test]
+    fn parse_sse_input_json_delta_extracts_partial_json() {
+        let event = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"steps\\\"\"}}";
+        let result = parse_sse_input_json_delta(event);
+        assert_eq!(result, Some(r#"{"steps""#.to_string()));
+    }
+
+    #[test]
+    fn parse_sse_input_json_delta_ignores_text_delta() {
+        let event = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}";
+        assert!(parse_sse_input_json_delta(event).is_none());
+    }
+
+    #[test]
+    fn step_extractor_finds_complete_steps() {
+        let mut extractor = StepExtractor::new();
+        let json = r#"{"steps": [{"title": "Add model", "summary": "s", "priority": "normal", "hunk_indices": [1]}]}"#;
+        let steps = extractor.feed(json);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].title, "Add model");
+        assert_eq!(steps[0].hunk_indices, vec![1]);
+    }
+
+    #[test]
+    fn step_extractor_incremental() {
+        let mut extractor = StepExtractor::new();
+
+        // First step complete, second incomplete
+        let partial = r#"{"steps": [{"title": "First", "summary": "s1", "priority": "normal", "hunk_indices": [1]}, {"title": "Sec"#;
+        let steps = extractor.feed(partial);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].title, "First");
+
+        // Complete the second step
+        let full = format!(
+            r#"{}ond", "summary": "s2", "priority": "critical", "hunk_indices": [2, 3]}}]}}"#,
+            partial
+        );
+        let steps2 = extractor.feed(&full);
+        assert_eq!(steps2.len(), 1);
+        assert_eq!(steps2[0].title, "Second");
+        assert_eq!(steps2[0].priority, "critical");
+    }
+
+    #[test]
+    fn step_extractor_handles_strings_with_braces() {
+        let mut extractor = StepExtractor::new();
+        let json = r#"{"steps": [{"title": "Handle {braces}", "summary": "has {nested} braces", "priority": "normal", "hunk_indices": [1]}]}"#;
+        let steps = extractor.feed(json);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].title, "Handle {braces}");
+    }
+
+    #[test]
+    fn step_extractor_ignores_steps_key_in_strings() {
+        let mut extractor = StepExtractor::new();
+        let json = r#"{"note": "the steps key", "steps": [{"title": "Real", "summary": "s", "priority": "normal", "hunk_indices": [1]}]}"#;
+        let steps = extractor.feed(json);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].title, "Real");
+    }
+
+    #[test]
+    fn step_extractor_split_steps_key() {
+        let mut extractor = StepExtractor::new();
+
+        // "steps" key split across feeds
+        let partial = r#"{"ste"#;
+        let steps = extractor.feed(partial);
+        assert!(steps.is_empty());
+
+        let full = r#"{"steps": [{"title": "Found", "summary": "s", "priority": "normal", "hunk_indices": [1]}]}"#;
+        let steps = extractor.feed(full);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].title, "Found");
+    }
 }

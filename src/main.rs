@@ -31,34 +31,25 @@ use api::ClaudeClient;
 use app::App;
 use constants::{EVENT_POLL_INTERVAL, EVENT_RECV_TIMEOUT, VIEWPORT_HEIGHT_OFFSET};
 use diff::FileFilter;
-use generation::{WalkthroughGenerator, create_sub_steps, format_step_for_rechunk};
+use generation::{StreamEvent, WalkthroughGenerator, create_sub_steps, format_step_for_rechunk};
 use input::InputHandler;
 use model::{CommitInfo, Message, ReviewMode, Step, Walkthrough};
 #[cfg(debug_assertions)]
 use model::mock_walkthrough;
 use settings::Settings;
 
-/// Events that can occur in the app
 enum AppEvent {
-    /// Terminal input event
     Terminal(Event),
-    /// Walkthrough generation completed
-    GenerationComplete(Walkthrough),
-    /// Walkthrough generation failed
+    GenerationComplete,
     GenerationError(String),
-    /// Chat response chunk received (step_index, text_chunk)
+    StepReady(Step),
     ChatChunk(usize, String),
-    /// Chat response completed (step_index)
     ChatComplete(usize),
-    /// Chat request failed (step_index, error_message)
     ChatError(usize, String),
-    /// Rechunk completed (step_index, sub_steps)
     RechunkComplete(usize, Vec<Step>),
-    /// Rechunk failed (error_message)
     RechunkError(String),
 }
 
-/// Spawns a task to generate a walkthrough from diff text
 fn spawn_walkthrough_generation(
     tx: mpsc::Sender<AppEvent>,
     api_key: String,
@@ -69,14 +60,28 @@ fn spawn_walkthrough_generation(
 ) {
     tokio::spawn(async move {
         match WalkthroughGenerator::with_filter(&diff_text, &filter, mode, api_key, commits) {
-            Ok(generator) => match generator.generate().await {
-                Ok(walkthrough) => {
-                    let _ = tx.send(AppEvent::GenerationComplete(walkthrough)).await;
+            Ok(generator) => {
+                let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(32);
+
+                let tx_forward = tx.clone();
+                let forward_task = tokio::spawn(async move {
+                    while let Some(StreamEvent::StepReady(s)) = event_rx.recv().await {
+                        if tx_forward.send(AppEvent::StepReady(s)).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+
+                match generator.generate_streaming(event_tx).await {
+                    Ok(()) => {
+                        let _ = forward_task.await;
+                        let _ = tx.send(AppEvent::GenerationComplete).await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::GenerationError(e.to_string())).await;
+                    }
                 }
-                Err(e) => {
-                    let _ = tx.send(AppEvent::GenerationError(e.to_string())).await;
-                }
-            },
+            }
             Err(e) => {
                 let _ = tx.send(AppEvent::GenerationError(e.to_string())).await;
             }
@@ -452,11 +457,6 @@ async fn run_app<B: Backend + Send>(
         if should_generate
             && let Some(diff_text) = app.session.diff_input.clone()
         {
-            let status = match app.session.review_mode {
-                ReviewMode::Walkthrough => "Generating walkthrough...",
-                ReviewMode::Review => "Generating review...",
-            };
-            app.session.set_loading_status(status.to_string());
             spawn_walkthrough_generation(
                 tx.clone(),
                 app.session.api_key_input.clone(),
@@ -486,11 +486,28 @@ fn handle_app_event<B: Backend>(
             input_handler.handle_mouse(mouse, app, terminal.size()?);
         }
         AppEvent::Terminal(_) => {}
-        AppEvent::GenerationComplete(walkthrough) => {
-            app.session.set_ready(walkthrough);
+        AppEvent::GenerationComplete => {
+            if app.session.walkthrough.steps.is_empty() {
+                app.session.generation_in_progress = false;
+                app.session.set_error(
+                    "Generation completed but no steps were produced".to_string(),
+                );
+            } else {
+                app.session.generation_finished();
+            }
         }
         AppEvent::GenerationError(message) => {
-            app.session.set_error(message);
+            if app.session.generation_in_progress
+                && !app.session.walkthrough.steps.is_empty()
+            {
+                app.session.generation_finished();
+            } else {
+                app.session.generation_in_progress = false;
+                app.session.set_error(message);
+            }
+        }
+        AppEvent::StepReady(step) => {
+            app.session.receive_step_ready(step);
         }
         AppEvent::ChatChunk(step_index, chunk) => {
             app.session.receive_chat_chunk(step_index, chunk);

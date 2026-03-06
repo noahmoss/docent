@@ -8,9 +8,10 @@ use serde::Serialize;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionState {
     Setup,
+    #[allow(dead_code)]
     Loading {
         status: String,
-        steps_received: usize,
+        step_titles: Vec<String>,
     },
     #[default]
     Ready,
@@ -25,6 +26,7 @@ pub struct Session {
     pub current_step: usize,
     pub reviewed_steps: Vec<bool>,
     pub walkthrough_complete: bool,
+    pub generation_in_progress: bool,
     pub review_mode: ReviewMode,
     pub chat_pending: Option<usize>,
     pub chat_request: Option<(usize, Walkthrough, Vec<Message>)>,
@@ -48,6 +50,7 @@ impl Session {
             current_step: 0,
             reviewed_steps: vec![false; step_count],
             walkthrough_complete: false,
+            generation_in_progress: false,
             review_mode: mode,
             chat_pending: None,
             chat_request: None,
@@ -70,6 +73,7 @@ impl Session {
             current_step: 0,
             reviewed_steps: vec![],
             walkthrough_complete: false,
+            generation_in_progress: false,
             review_mode: mode,
             chat_pending: None,
             chat_request: None,
@@ -91,19 +95,12 @@ impl Session {
         if self.api_key_input.trim().is_empty() {
             return;
         }
-        self.state = SessionState::Loading {
-            status: "Initializing...".to_string(),
-            steps_received: 0,
-        };
-        self.generation_requested = true;
-    }
-
-    pub fn set_ready(&mut self, walkthrough: Walkthrough) {
-        let step_count = walkthrough.step_count();
-        self.walkthrough = walkthrough;
-        self.reviewed_steps = vec![false; step_count];
+        self.walkthrough = Walkthrough { steps: vec![] };
+        self.reviewed_steps = vec![];
         self.current_step = 0;
+        self.generation_in_progress = true;
         self.state = SessionState::Ready;
+        self.generation_requested = true;
     }
 
     pub fn set_error(&mut self, message: String) {
@@ -115,20 +112,23 @@ impl Session {
     }
 
     pub fn request_retry(&mut self) {
-        self.state = SessionState::Loading {
-            status: "Retrying...".to_string(),
-            steps_received: 0,
-        };
+        self.walkthrough = Walkthrough { steps: vec![] };
+        self.reviewed_steps = vec![];
+        self.current_step = 0;
+        self.generation_in_progress = true;
+        self.state = SessionState::Ready;
         self.retry_requested = true;
     }
 
-    pub fn set_loading_status(&mut self, status: String) {
-        if let SessionState::Loading { steps_received, .. } = &self.state {
-            self.state = SessionState::Loading {
-                status,
-                steps_received: *steps_received,
-            };
+    pub fn receive_step_ready(&mut self, step: Step) {
+        if matches!(self.state, SessionState::Ready) && self.generation_in_progress {
+            self.walkthrough.steps.push(step);
+            self.reviewed_steps.push(false);
         }
+    }
+
+    pub fn generation_finished(&mut self) {
+        self.generation_in_progress = false;
     }
 
     // --- Navigation ---
@@ -167,6 +167,9 @@ impl Session {
 
     /// Returns true if the step actually changed.
     pub fn complete_step_and_advance(&mut self) -> bool {
+        if self.walkthrough.steps.is_empty() {
+            return false;
+        }
         self.set_step_reviewed(self.current_step, true);
         self.sync_parent_completion(self.current_step);
 
@@ -180,6 +183,9 @@ impl Session {
     }
 
     pub fn toggle_step_reviewed(&mut self) {
+        if self.walkthrough.steps.is_empty() {
+            return;
+        }
         let current = self.is_step_reviewed(self.current_step);
         self.set_step_reviewed(self.current_step, !current);
         self.sync_parent_completion(self.current_step);

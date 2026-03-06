@@ -1,10 +1,15 @@
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 use crate::api::{
-    ApiError, ClaudeClient, CreateWalkthroughResponse, RechunkResponse, WalkthroughStepResponse,
+    ApiError, ClientStreamEvent, ClaudeClient, RechunkResponse, WalkthroughStepResponse,
 };
 use crate::diff::{DiffParseError, FileFilter, ParsedDiff};
-use crate::model::{CommitInfo, Hunk, Message, Priority, ReviewMode, Step, Walkthrough};
+use crate::model::{CommitInfo, Hunk, Message, Priority, ReviewMode, Step};
+
+pub enum StreamEvent {
+    StepReady(Step),
+}
 
 #[derive(Debug, Error)]
 pub enum GenerationError {
@@ -52,10 +57,47 @@ impl WalkthroughGenerator {
         })
     }
 
-    pub async fn generate(&self) -> Result<Walkthrough, GenerationError> {
+    pub async fn generate_streaming(
+        self,
+        event_tx: mpsc::Sender<StreamEvent>,
+    ) -> Result<(), GenerationError> {
         let prompt = self.build_prompt();
-        let response = self.client.generate_walkthrough(&prompt, self.mode).await?;
-        self.correlate_response(response)
+
+        let WalkthroughGenerator {
+            parsed_diff,
+            client,
+            mode,
+            ..
+        } = self;
+
+        let (client_tx, mut client_rx) = mpsc::channel::<ClientStreamEvent>(32);
+
+        let api_task = tokio::spawn(async move {
+            client
+                .generate_walkthrough_streaming(&prompt, mode, client_tx)
+                .await
+        });
+
+        let max_hunk_index = parsed_diff.hunks.len();
+        let mut step_index = 0;
+
+        while let Some(ClientStreamEvent::StepComplete(response)) = client_rx.recv().await {
+            match correlate_step(&parsed_diff, response, step_index, max_hunk_index) {
+                Ok(step) => {
+                    step_index += 1;
+                    let _ = event_tx.send(StreamEvent::StepReady(step)).await;
+                }
+                Err(_) => {
+                    step_index += 1;
+                }
+            }
+        }
+
+        api_task
+            .await
+            .map_err(|e| GenerationError::Api(ApiError::Parse(e.to_string())))??;
+
+        Ok(())
     }
 
     fn build_prompt(&self) -> String {
@@ -73,56 +115,42 @@ impl WalkthroughGenerator {
         prompt
     }
 
-    fn correlate_response(
-        &self,
-        response: CreateWalkthroughResponse,
-    ) -> Result<Walkthrough, GenerationError> {
-        let max_index = self.parsed_diff.hunks.len();
-        let mut steps = Vec::new();
+}
 
-        for (i, step_response) in response.steps.into_iter().enumerate() {
-            let step = self.correlate_step(step_response, i, max_index)?;
-            steps.push(step);
+fn correlate_step(
+    parsed_diff: &ParsedDiff,
+    response: WalkthroughStepResponse,
+    step_index: usize,
+    max_hunk_index: usize,
+) -> Result<Step, GenerationError> {
+    let mut hunks = Vec::new();
+
+    for &idx in &response.hunk_indices {
+        if idx == 0 || idx > max_hunk_index {
+            return Err(GenerationError::HunkIndexOutOfBounds(idx, max_hunk_index));
         }
 
-        Ok(Walkthrough { steps })
-    }
-
-    fn correlate_step(
-        &self,
-        response: WalkthroughStepResponse,
-        step_index: usize,
-        max_hunk_index: usize,
-    ) -> Result<Step, GenerationError> {
-        let mut hunks = Vec::new();
-
-        for &idx in &response.hunk_indices {
-            if idx == 0 || idx > max_hunk_index {
-                return Err(GenerationError::HunkIndexOutOfBounds(idx, max_hunk_index));
-            }
-
-            if let Some(parsed_hunk) = self.parsed_diff.get_hunk(idx) {
-                hunks.push(Hunk {
-                    file_path: parsed_hunk.file_path.clone(),
-                    start_line: parsed_hunk.start_line,
-                    end_line: parsed_hunk.end_line,
-                    content: parsed_hunk.content.clone(),
-                });
-            }
+        if let Some(parsed_hunk) = parsed_diff.get_hunk(idx) {
+            hunks.push(Hunk {
+                file_path: parsed_hunk.file_path.clone(),
+                start_line: parsed_hunk.start_line,
+                end_line: parsed_hunk.end_line,
+                content: parsed_hunk.content.clone(),
+            });
         }
-
-        let priority = Priority::parse(&response.priority);
-
-        Ok(Step {
-            id: format!("{}", step_index + 1),
-            title: response.title.clone(),
-            summary: response.summary.clone(),
-            priority,
-            hunks,
-            messages: vec![Message::assistant(&response.summary)],
-            depth: 0,
-        })
     }
+
+    let priority = Priority::parse(&response.priority);
+
+    Ok(Step {
+        id: format!("{}", step_index + 1),
+        title: response.title.clone(),
+        summary: response.summary.clone(),
+        priority,
+        hunks,
+        messages: vec![Message::assistant(&response.summary)],
+        depth: 0,
+    })
 }
 
 fn format_commits(commits: &[CommitInfo]) -> String {

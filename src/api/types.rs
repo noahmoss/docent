@@ -13,7 +13,8 @@ pub enum ApiError {
     Parse(String),
 }
 
-/// Tool schema for Claude to create a walkthrough
+#[allow(dead_code)]
+/// Tool schema for Claude to create a walkthrough (kept for rechunk reference)
 pub const CREATE_WALKTHROUGH_TOOL: &str = r#"{
   "name": "create_walkthrough",
   "description": "Create a structured code review walkthrough organizing diff hunks into a narrative sequence of steps",
@@ -69,7 +70,13 @@ Guidelines:
 - Focus on describing what the code does and why, not on finding problems
 - When a commit history is provided, use it to understand the author's intended progression. Commit boundaries and messages are a useful signal for grouping changes into steps, but reorganize freely if a different narrative order is clearer.
 
-Call the create_walkthrough tool with your structured analysis."#;
+Respond with a JSON object containing a "steps" array. Each step object has these fields:
+- "title": short title (e.g., "Add UserSession model")
+- "summary": markdown explanation of what this step does and why it matters
+- "priority": one of "critical", "normal", or "minor"
+- "hunk_indices": array of 1-based hunk indices belonging to this step
+
+Output ONLY the JSON object. No markdown fences, no commentary."#;
 
 const REVIEW_SYSTEM_PROMPT: &str = r#"You are an expert code reviewer performing an opinionated review of a code change.
 
@@ -89,7 +96,13 @@ Guidelines:
 - Don't nitpick style or formatting — focus on things that could break or that the author should reconsider
 - When a commit history is provided, use it to understand the author's intended progression. Commit boundaries and messages are a useful signal for grouping changes into steps, but reorganize freely if a different narrative order is clearer.
 
-Call the create_walkthrough tool with your structured analysis."#;
+Respond with a JSON object containing a "steps" array. Each step object has these fields:
+- "title": short title (e.g., "Add UserSession model")
+- "summary": markdown explanation of what this step does and why it matters
+- "priority": one of "critical", "normal", or "minor"
+- "hunk_indices": array of 1-based hunk indices belonging to this step
+
+Output ONLY the JSON object. No markdown fences, no commentary."#;
 
 const WALKTHROUGH_CHAT_PROMPT: &str = r#"You are an expert code reviewer helping a developer understand a code change.
 
@@ -139,12 +152,6 @@ pub struct WalkthroughStepResponse {
     pub summary: String,
     pub priority: String,
     pub hunk_indices: Vec<usize>,
-}
-
-/// The full tool call response from Claude
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateWalkthroughResponse {
-    pub steps: Vec<WalkthroughStepResponse>,
 }
 
 /// Tool schema for Claude to rechunk a single step into sub-steps using line ranges

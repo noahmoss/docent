@@ -40,8 +40,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         SessionState::Setup => {
             setup::render(frame, frame.area(), app);
         }
-        SessionState::Loading { status, .. } => {
-            render_loading(frame, frame.area(), status);
+        SessionState::Loading {
+            status,
+            step_titles,
+        } => {
+            render_loading(frame, frame.area(), status, step_titles);
         }
         SessionState::Error { message } => {
             render_error(frame, frame.area(), message);
@@ -69,12 +72,13 @@ fn render_ready(frame: &mut Frame, app: &App) {
     }
 }
 
-fn render_loading(frame: &mut Frame, area: Rect, status: &str) {
+fn render_loading(frame: &mut Frame, area: Rect, status: &str, step_titles: &[String]) {
     let dialog_area = centered_rect(LOADING_DIALOG_WIDTH, LOADING_DIALOG_HEIGHT, area);
     let block = Block::default()
         .title(" Generating Walkthrough ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Color::Cyan))
+        .padding(Padding::horizontal(2));
 
     let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let spinner_idx = (std::time::SystemTime::now()
@@ -82,29 +86,36 @@ fn render_loading(frame: &mut Frame, area: Rect, status: &str) {
         .map(|d| d.as_millis() / 100)
         .unwrap_or(0) as usize)
         % spinner_frames.len();
+    let spinner = spinner_frames[spinner_idx];
 
-    let text = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                spinner_frames[spinner_idx],
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::raw(status),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Press Ctrl+C to cancel",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ];
+    let mut lines = vec![Line::from("")];
 
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .alignment(Alignment::Center);
+    for title in step_titles {
+        lines.push(Line::from(vec![
+            Span::styled("  ✓ ", Style::default().fg(Color::Green)),
+            Span::raw(title.as_str()),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            spinner,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::raw(status),
+    ]));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Press Ctrl+C to cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let paragraph = Paragraph::new(lines).block(block);
 
     frame.render_widget(paragraph, dialog_area);
 }

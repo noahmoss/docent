@@ -146,6 +146,21 @@ impl Notification {
         Self::new("error", serde_json::json!({ "message": message }))
     }
 
+    pub fn step_added(step: &Step, index: usize, reviewed: &[bool]) -> Self {
+        Self::new(
+            "step_added",
+            serde_json::json!({
+                "step": step,
+                "index": index,
+                "reviewed": reviewed,
+            }),
+        )
+    }
+
+    pub fn generation_complete() -> Self {
+        Self::bare("generation_complete")
+    }
+
     pub fn shutdown() -> Self {
         Self::bare("shutdown")
     }
@@ -159,6 +174,7 @@ pub struct StateSnapshot {
     pub walkthrough: Walkthrough,
     pub reviewed: Vec<bool>,
     pub walkthrough_complete: bool,
+    pub generation_in_progress: bool,
     pub chat_pending: Option<usize>,
     pub rechunk_pending: bool,
 }

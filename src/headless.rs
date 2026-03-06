@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use crate::api::ClaudeClient;
 use crate::diff::FileFilter;
-use crate::generation::{WalkthroughGenerator, create_sub_steps, format_step_for_rechunk};
+use crate::generation::{StreamEvent, WalkthroughGenerator, create_sub_steps, format_step_for_rechunk};
 use crate::model::{CommitInfo, Message, ReviewMode, Step, Walkthrough};
 use crate::protocol::{
     NavigateAction, NavigateParams, Notification, Request, Response, SendMessageParams,
@@ -20,8 +20,9 @@ use crate::settings::Settings;
 use super::DiffInput;
 
 enum EngineEvent {
-    GenerationComplete(Walkthrough),
+    GenerationComplete,
     GenerationError(String),
+    StepReady(Step),
     ChatChunk(usize, String),
     ChatComplete(usize),
     ChatError(usize, String),
@@ -92,10 +93,7 @@ pub async fn run(
     });
 
     // Start walkthrough generation immediately
-    session.state = SessionState::Loading {
-        status: "Generating...".to_string(),
-        steps_received: 0,
-    };
+    session.generation_in_progress = true;
     spawn_generation(tx.clone(), session.api_key_input.clone(), diff_text, filter, mode, commits);
 
     let mut clients: Vec<(usize, mpsc::Sender<String>)> = Vec::new();
@@ -332,18 +330,46 @@ fn handle_engine_event(session: &mut Session, event: EngineEvent) -> Vec<Notific
     let mut notifications = Vec::new();
 
     match event {
-        EngineEvent::GenerationComplete(walkthrough) => {
-            session.set_ready(walkthrough);
-            notifications.push(Notification::state_changed(&session.state));
-            notifications.push(Notification::walkthrough_loaded(
-                &session.walkthrough,
-                &session.reviewed_steps,
-            ));
+        EngineEvent::GenerationComplete => {
+            if session.walkthrough.steps.is_empty() {
+                session.generation_in_progress = false;
+                let msg = "Generation completed but no steps were produced".to_string();
+                session.set_error(msg.clone());
+                notifications.push(Notification::state_changed(&session.state));
+                notifications.push(Notification::error(&msg));
+            } else {
+                session.generation_finished();
+                notifications.push(Notification::generation_complete());
+            }
         }
         EngineEvent::GenerationError(message) => {
-            session.set_error(message.clone());
-            notifications.push(Notification::state_changed(&session.state));
-            notifications.push(Notification::error(&message));
+            if session.generation_in_progress
+                && !session.walkthrough.steps.is_empty()
+            {
+                session.generation_finished();
+                notifications.push(Notification::generation_complete());
+            } else {
+                session.generation_in_progress = false;
+                session.set_error(message.clone());
+                notifications.push(Notification::state_changed(&session.state));
+                notifications.push(Notification::error(&message));
+            }
+        }
+        EngineEvent::StepReady(step) => {
+            let index = session.walkthrough.steps.len();
+            session.receive_step_ready(step);
+            if matches!(session.state, SessionState::Ready) {
+                if let Some(step) = session.walkthrough.get_step(index) {
+                    notifications.push(Notification::step_added(
+                        step,
+                        index,
+                        &session.reviewed_steps,
+                    ));
+                }
+                if index == 0 {
+                    notifications.push(Notification::state_changed(&session.state));
+                }
+            }
         }
         EngineEvent::ChatChunk(step_index, chunk) => {
             session.receive_chat_chunk(step_index, chunk.clone());
@@ -382,6 +408,7 @@ fn build_snapshot(session: &Session) -> StateSnapshot {
         walkthrough: session.walkthrough.clone(),
         reviewed: session.reviewed_steps.clone(),
         walkthrough_complete: session.walkthrough_complete,
+        generation_in_progress: session.generation_in_progress,
         chat_pending: session.chat_pending,
         rechunk_pending: session.rechunk_pending,
     }
@@ -404,14 +431,43 @@ fn spawn_generation(
     commits: Vec<CommitInfo>,
 ) {
     tokio::spawn(async move {
-        let event = match WalkthroughGenerator::with_filter(&diff_text, &filter, mode, api_key, commits) {
-            Ok(generator) => match generator.generate().await {
-                Ok(walkthrough) => EngineEvent::GenerationComplete(walkthrough),
-                Err(e) => EngineEvent::GenerationError(e.to_string()),
-            },
-            Err(e) => EngineEvent::GenerationError(e.to_string()),
-        };
-        let _ = tx.send(ServerEvent::Engine(event)).await;
+        match WalkthroughGenerator::with_filter(&diff_text, &filter, mode, api_key, commits) {
+            Ok(generator) => {
+                let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(32);
+
+                let tx_forward = tx.clone();
+                let forward_task = tokio::spawn(async move {
+                    while let Some(StreamEvent::StepReady(s)) = event_rx.recv().await {
+                        let _ = tx_forward
+                            .send(ServerEvent::Engine(EngineEvent::StepReady(s)))
+                            .await;
+                    }
+                });
+
+                match generator.generate_streaming(event_tx).await {
+                    Ok(()) => {
+                        let _ = forward_task.await;
+                        let _ = tx
+                            .send(ServerEvent::Engine(EngineEvent::GenerationComplete))
+                            .await;
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(ServerEvent::Engine(EngineEvent::GenerationError(
+                                e.to_string(),
+                            )))
+                            .await;
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(ServerEvent::Engine(EngineEvent::GenerationError(
+                        e.to_string(),
+                    )))
+                    .await;
+            }
+        }
     });
 }
 
