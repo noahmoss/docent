@@ -351,6 +351,13 @@ async fn main() -> io::Result<()> {
         return headless::run(diff_input, filter, mode).await;
     }
 
+    // Emit OSC 7 so tmux knows our working directory for new panes/windows
+    if let Ok(cwd) = std::env::current_dir() {
+        use std::io::Write;
+        let _ = write!(stdout(), "\x1b]7;file://localhost{}\x1b\\", cwd.display());
+        let _ = stdout().flush();
+    }
+
     // Setup terminal
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
